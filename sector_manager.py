@@ -6,16 +6,19 @@ from resources import choose_metal_type, get_metal_color
 class SectorManager:
     """Deterministic procedural sector generation backed by a world seed."""
 
-    def __init__(self, seed, sector_size=1200):
+    def __init__(self, seed, sector_size=1200, sector_height=None):
         self.seed = int(seed)
-        self.sector_size = int(sector_size)
+        self.sector_width = int(sector_size)
+        self.sector_height = int(sector_height if sector_height is not None else sector_size)
+        # Backward-compatible alias used by older code paths.
+        self.sector_size = self.sector_width
         self._station_cache = {}
         self._asteroid_cache = {}
         self._planet_cache = {}
 
     def world_to_sector(self, world_position):
-        sx = math.floor(world_position.x / self.sector_size)
-        sy = math.floor(world_position.y / self.sector_size)
+        sx = math.floor(world_position.x / self.sector_width)
+        sy = math.floor(world_position.y / self.sector_height)
         return sx, sy
 
     def _sector_rng(self, sector_x, sector_y):
@@ -32,15 +35,16 @@ class SectorManager:
         rng = self._sector_rng(sector_x, sector_y)
         station_count = rng.choices([0, 1, 2], weights=[62, 31, 7], k=1)[0]
 
-        origin_x = sector_x * self.sector_size
-        origin_y = sector_y * self.sector_size
+        origin_x = sector_x * self.sector_width
+        origin_y = sector_y * self.sector_height
         # Keep stations clearly away from sector boundaries.
-        margin = min(430, max(220, int(self.sector_size * 0.34)))
+        margin_x = min(430, max(140, int(self.sector_width * 0.22)))
+        margin_y = min(280, max(90, int(self.sector_height * 0.22)))
         stations = []
 
         for index in range(station_count):
-            px = origin_x + rng.uniform(margin, self.sector_size - margin)
-            py = origin_y + rng.uniform(margin, self.sector_size - margin)
+            px = origin_x + rng.uniform(margin_x, self.sector_width - margin_x)
+            py = origin_y + rng.uniform(margin_y, self.sector_height - margin_y)
             station_id = f"{sector_x}:{sector_y}:{index}"
             stations.append((station_id, px, py))
 
@@ -72,10 +76,10 @@ class SectorManager:
                 return []
 
             # Small junk pocket for occasional non-belt sectors.
-            origin_x = sector_x * self.sector_size
-            origin_y = sector_y * self.sector_size
-            pocket_x = origin_x + rng.uniform(self.sector_size * 0.25, self.sector_size * 0.75)
-            pocket_y = origin_y + rng.uniform(self.sector_size * 0.25, self.sector_size * 0.75)
+            origin_x = sector_x * self.sector_width
+            origin_y = sector_y * self.sector_height
+            pocket_x = origin_x + rng.uniform(self.sector_width * 0.25, self.sector_width * 0.75)
+            pocket_y = origin_y + rng.uniform(self.sector_height * 0.25, self.sector_height * 0.75)
             base_theta = rng.uniform(0.0, math.tau)
             base_speed = rng.uniform(8.0, 18.0)
             base_vx = math.cos(base_theta) * base_speed
@@ -96,16 +100,17 @@ class SectorManager:
                 specs.append((asteroid_id, x, y, radius, vx, vy))
             return specs
 
-        origin_x = sector_x * self.sector_size
-        origin_y = sector_y * self.sector_size
-        center_x = origin_x + self.sector_size * 0.5
-        center_y = origin_y + self.sector_size * 0.5
+        origin_x = sector_x * self.sector_width
+        origin_y = sector_y * self.sector_height
+        center_x = origin_x + self.sector_width * 0.5
+        center_y = origin_y + self.sector_height * 0.5
 
         belt_angle = rng.uniform(0.0, math.tau)
         belt_dir = (math.cos(belt_angle), math.sin(belt_angle))
         belt_perp = (-belt_dir[1], belt_dir[0])
-        belt_length = rng.uniform(self.sector_size * 0.58, self.sector_size * 0.92)
-        belt_width = rng.uniform(55.0, 120.0)
+        belt_base = min(self.sector_width, self.sector_height)
+        belt_length = rng.uniform(belt_base * 0.58, belt_base * 0.9)
+        belt_width = rng.uniform(45.0, min(120.0, belt_base * 0.18))
         cluster_count = rng.randint(4, 7)
 
         # Build chain-like belts by spacing cluster anchors along the belt axis.
@@ -165,10 +170,11 @@ class SectorManager:
         if planet_count <= 0:
             return []
 
-        origin_x = sector_x * self.sector_size
-        origin_y = sector_y * self.sector_size
+        origin_x = sector_x * self.sector_width
+        origin_y = sector_y * self.sector_height
         # Keep planets deep in-sector and visually distinct from edge transitions.
-        margin = min(470, max(260, int(self.sector_size * 0.39)))
+        margin_x = min(470, max(180, int(self.sector_width * 0.26)))
+        margin_y = min(250, max(110, int(self.sector_height * 0.26)))
         existing_stations = self.get_sector_stations(sector_x, sector_y)
         planets = []
 
@@ -176,8 +182,8 @@ class SectorManager:
             px = None
             py = None
             for _ in range(12):
-                cand_x = origin_x + rng.uniform(margin, self.sector_size - margin)
-                cand_y = origin_y + rng.uniform(margin, self.sector_size - margin)
+                cand_x = origin_x + rng.uniform(margin_x, self.sector_width - margin_x)
+                cand_y = origin_y + rng.uniform(margin_y, self.sector_height - margin_y)
 
                 too_close_to_station = any(
                     math.dist((cand_x, cand_y), (sx, sy)) < 190
@@ -198,8 +204,8 @@ class SectorManager:
                 break
 
             if px is None or py is None:
-                px = origin_x + rng.uniform(margin, self.sector_size - margin)
-                py = origin_y + rng.uniform(margin, self.sector_size - margin)
+                px = origin_x + rng.uniform(margin_x, self.sector_width - margin_x)
+                py = origin_y + rng.uniform(margin_y, self.sector_height - margin_y)
 
             accepted_metal = choose_metal_type(rng)
             color = get_metal_color(accepted_metal)

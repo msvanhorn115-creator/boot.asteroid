@@ -86,6 +86,7 @@ def build_upgrade_lines(player):
 
 
 def build_upgrade_button_rects(panel_rect):
+    left_width = max(260, min(360, panel_rect.width // 2 - 56))
     y_starts = {
         "buy_fire_rate": 210,
         "buy_shield": 246,
@@ -97,7 +98,7 @@ def build_upgrade_button_rects(panel_rect):
     }
 
     return {
-        key: pygame.Rect(panel_rect.x + 20, panel_rect.y + y_value, 300, 38)
+        key: pygame.Rect(panel_rect.x + 20, panel_rect.y + y_value, left_width, 38)
         for key, y_value in y_starts.items()
     }
 

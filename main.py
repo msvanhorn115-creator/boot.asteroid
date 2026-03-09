@@ -21,7 +21,8 @@ from station_panel import draw_station_panel, resolve_station_click
 from planet_panel import draw_planet_panel, resolve_planet_click
 from upgrade_actions import apply_upgrade
 from menu_panel import draw_menu_panel
-from map_panel import draw_map_panel
+from map_panel import draw_map_panel, map_sector_at_point
+from ui_theme import UI_COLORS
 from effects import (
     draw_ship_explosion_fx,
     spawn_metal_pickup_fx,
@@ -143,7 +144,7 @@ def main():
     clock = pygame.time.Clock()
 
     world_seed = int(os.environ.get("ASTEROID_WORLD_SEED", "1337"))
-    sector_manager = SectorManager(world_seed, sector_size=1200)
+    sector_manager = SectorManager(world_seed, sector_size=SCREEN_WIDTH, sector_height=SCREEN_HEIGHT)
 
     # Optional retro BGM loader: place a licensed track in assets/audio.
     music_loaded = False
@@ -285,9 +286,18 @@ def main():
 
         screen.blit(icon_surface, button_rect.topleft)
 
-    hud_font = pygame.font.SysFont("monospace", 18)
-    panel_font = pygame.font.SysFont("monospace", 22)
-    title_font = pygame.font.SysFont("monospace", 40)
+    def draw_hud_chip(text, x, y, color=None):
+        fg = UI_COLORS["text"] if color is None else color
+        label = hud_font.render(text, True, fg)
+        bg_rect = pygame.Rect(x, y, label.get_width() + 16, label.get_height() + 8)
+        pygame.draw.rect(screen, (9, 16, 29, 188), bg_rect, border_radius=8)
+        pygame.draw.rect(screen, (58, 76, 106), bg_rect, 1, border_radius=8)
+        screen.blit(label, (x + 8, y + 4))
+        return bg_rect
+
+    hud_font = pygame.font.SysFont("dejavusansmono", 18)
+    panel_font = pygame.font.SysFont("dejavusans", 23)
+    title_font = pygame.font.SysFont("freesansbold", 40)
 
     dt = 0.0
     elapsed_time = 0.0
@@ -376,6 +386,11 @@ def main():
     selected_difficulty = "normal"
     metal_prices = get_metal_prices()
     active_difficulty = DIFFICULTY_SETTINGS[selected_difficulty]
+    enemy_field = None
+    base_enemy_spawn_interval = active_difficulty["enemy_spawn"]
+    base_enemy_max_alive = active_difficulty["enemy_max_alive"]
+    current_enemy_spawn_interval = base_enemy_spawn_interval
+    current_enemy_max_alive = base_enemy_max_alive
     station_ui = {
         "sell_tab": None,
         "upgrade_tab": None,
@@ -395,6 +410,10 @@ def main():
     available_jobs = []
     active_contract = None
     explored_sectors = {}
+    live_sector_intel = {}
+    persistent_sector_enemies = {}
+    scanner_cooldown_timer = 0.0
+    scanner_passive_timer = 0.0
 
     game_state = "menu"  # menu | playing | paused
     has_active_game = False
@@ -419,70 +438,315 @@ def main():
     show_map_overlay = False
     audio_slider_dragging = None
 
-    def capture_sector_snapshot(sector_x, sector_y):
-        stations_count = len(sector_manager.get_sector_stations(sector_x, sector_y))
-        planets_count = len(sector_manager.get_sector_planets(sector_x, sector_y))
-        asteroid_density = len(sector_manager.get_sector_asteroids(sector_x, sector_y))
+    def normalize_in_sector(world_x, world_y, sector_x, sector_y):
+        origin_x = sector_x * sector_manager.sector_width
+        origin_y = sector_y * sector_manager.sector_height
+        nx = (world_x - origin_x) / float(sector_manager.sector_width)
+        ny = (world_y - origin_y) / float(sector_manager.sector_height)
+        return max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny))
+
+    def capture_sector_snapshot(sector_x, sector_y, visited=False, charted=False):
+        stations_data = sector_manager.get_sector_stations(sector_x, sector_y)
+        planets_data = sector_manager.get_sector_planets(sector_x, sector_y)
+        asteroid_data = sector_manager.get_sector_asteroids(sector_x, sector_y)
+
+        stations = []
+        for _, world_x, world_y in stations_data:
+            nx, ny = normalize_in_sector(world_x, world_y, sector_x, sector_y)
+            stations.append({"x": nx, "y": ny})
+
+        planets = []
+        for _, world_x, world_y, accepted_metal, color in planets_data:
+            nx, ny = normalize_in_sector(world_x, world_y, sector_x, sector_y)
+            planets.append(
+                {
+                    "x": nx,
+                    "y": ny,
+                    "metal": accepted_metal,
+                    "color": color,
+                }
+            )
+
+        asteroid_count = 0
+        for asteroid_id, *_ in asteroid_data:
+            if asteroid_id in destroyed_seed_asteroids:
+                continue
+            asteroid_count += 1
+
+        previous = explored_sectors.get((sector_x, sector_y), {})
         explored_sectors[(sector_x, sector_y)] = {
-            "has_station": stations_count > 0,
-            "has_planet": planets_count > 0,
-            "asteroid_density": asteroid_density,
+            "has_station": len(stations) > 0,
+            "has_planet": len(planets) > 0,
+            "asteroid_density": asteroid_count,
+            "stations": stations,
+            "planets": planets,
+            "visited": bool(visited or previous.get("visited", False)),
+            "charted": bool(charted or visited or previous.get("charted", False)),
         }
+
+    def scanner_cooldown_for_level(level):
+        # L0 no remote scan, L1-L4 progressively faster scans.
+        return [999.0, 10.0, 7.0, 5.0, 3.5][max(0, min(4, int(level)))]
+
+    def get_persistent_sector_enemies(sector):
+        contacts = persistent_sector_enemies.get(sector)
+        if contacts is None:
+            sx, sy = sector
+            rng = random.Random((world_seed * 1000003) ^ (sx * 92821) ^ (sy * 68917) ^ 0xA341316C)
+            count = rng.choices([0, 1, 2, 3, 4], weights=[44, 27, 17, 8, 4], k=1)[0]
+            contacts = []
+            for _ in range(count):
+                contacts.append(
+                    {
+                        "x": rng.uniform(0.05, 0.95),
+                        "y": rng.uniform(0.05, 0.95),
+                    }
+                )
+            persistent_sector_enemies[sector] = contacts
+        return contacts
+
+    def update_persistent_sector_enemies(dt_seconds):
+        return
+
+    def sync_active_sector_enemies_to_persistent():
+        return
+
+    def scanner_pulse_offsets(level):
+        lvl = max(0, min(4, int(level)))
+        if lvl <= 1:
+            return [(0, 0)]
+        if lvl == 2:
+            return [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+        return [
+            (dx, dy)
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+        ]
+
+    def scan_sector(sector):
+        if player is None:
+            return False
+
+        sx, sy = sector
+        snapshot = explored_sectors.get(sector)
+        if snapshot is None:
+            capture_sector_snapshot(sx, sy, visited=False, charted=True)
+            snapshot = explored_sectors.get(sector, {})
+        elif not snapshot.get("charted", False):
+            capture_sector_snapshot(sx, sy, visited=False, charted=True)
+            snapshot = explored_sectors.get(sector, {})
+
+        visited = bool(snapshot.get("visited", False))
+
+        asteroid_points = []
+        asteroid_count = 0
+        for asteroid_id, world_x, world_y, radius, _, _ in sector_manager.get_sector_asteroids(sx, sy):
+            if asteroid_id in destroyed_seed_asteroids:
+                continue
+            nx, ny = normalize_in_sector(world_x, world_y, sx, sy)
+            asteroid_points.append(
+                {
+                    "x": nx,
+                    "y": ny,
+                    "r": radius,
+                }
+            )
+            asteroid_count += 1
+
+        enemy_points = []
+
+        if sector == active_sector:
+            # Ensure active-sector scan reflects exact live local entities.
+            asteroid_points = []
+            if asteroids is not None:
+                for asteroid in list(asteroids):
+                    if not asteroid.alive():
+                        continue
+                    asteroid_world = asteroid.position + world_offset
+                    asx, asy = sector_manager.world_to_sector(asteroid_world)
+                    if (asx, asy) != sector:
+                        continue
+                    anx, any_ = normalize_in_sector(asteroid_world.x, asteroid_world.y, sx, sy)
+                    asteroid_points.append({"x": anx, "y": any_, "r": int(asteroid.radius)})
+            asteroid_count = len(asteroid_points)
+
+            enemy_points = []
+            if enemies is not None:
+                for enemy in list(enemies):
+                    if not enemy.alive():
+                        continue
+                    enx = max(0.0, min(1.0, enemy.position.x / float(SCREEN_WIDTH)))
+                    eny = max(0.0, min(1.0, enemy.position.y / float(SCREEN_HEIGHT)))
+                    enemy_points.append({"x": enx, "y": eny})
+                else:
+                    contacts = get_persistent_sector_enemies(sector)
+                    enemy_points = [{"x": c["x"], "y": c["y"]} for c in contacts]
+
+        live_sector_intel[sector] = {
+            "ships": len(enemy_points),
+            "asteroids_current": asteroid_count,
+            "enemy_points": enemy_points,
+            "asteroid_points": asteroid_points,
+        }
+
+        if not visited:
+            capture_sector_snapshot(sx, sy, visited=False, charted=True)
+
+        return True
+
+    def perform_scanner_pulse(center_sector, force=False):
+        nonlocal scanner_cooldown_timer, scanner_passive_timer
+        if player is None or player.scanner_level <= 0:
+            return 0
+
+        if not force and scanner_cooldown_timer > 0:
+            return 0
+
+        scanned = 0
+        offsets = scanner_pulse_offsets(player.scanner_level)
+        for dx, dy in offsets:
+            sector = (center_sector[0] + dx, center_sector[1] + dy)
+            if scan_sector(sector):
+                scanned += 1
+
+        if not force:
+            scanner_cooldown_timer = scanner_cooldown_for_level(player.scanner_level)
+            scanner_passive_timer = 0.0
+        return scanned
 
     def apply_scanner_reveal():
         if player is None:
             return
-        reveal_radius = max(0, int(player.scanner_level))
-        for sy in range(active_sector[1] - reveal_radius, active_sector[1] + reveal_radius + 1):
-            for sx in range(active_sector[0] - reveal_radius, active_sector[0] + reveal_radius + 1):
-                capture_sector_snapshot(sx, sy)
+        capture_sector_snapshot(active_sector[0], active_sector[1], visited=True, charted=True)
 
-    def generate_jobs(origin_type):
+    def generate_jobs(origin_type, origin_sector=None, job_count=3):
+        if origin_sector is None:
+            origin_sector = active_sector
+
         jobs = []
-        mission_templates = [
-            ("Courier", "priority mail pouch", "packet"),
-            ("Medical", "medical supply crates", "crate"),
-            ("Relief", "water purification kits", "kit"),
-            ("Engineering", "reactor spare parts", "module"),
-            ("Transport", "civilian passengers", "passenger"),
-            ("Diplomatic", "embassy staff", "passenger"),
-            ("Evacuation", "evacuees", "passenger"),
-            ("Science", "survey team + instruments", "team"),
-        ]
-        for _ in range(3):
-            mission, payload, unit_name = random.choice(mission_templates)
-            amount = random.randint(1, 6) if unit_name == "passenger" else random.randint(2, 10)
-            while True:
-                target_sector = (
-                    active_sector[0] + random.randint(-3, 3),
-                    active_sector[1] + random.randint(-3, 3),
-                )
-                if target_sector != active_sector:
-                    break
+        used_targets = set()
 
-            target_type = random.choice(["station", "planet"])
-            distance = abs(target_sector[0] - active_sector[0]) + abs(target_sector[1] - active_sector[1])
-            base = 120 + distance * random.randint(85, 170)
-            urgency = random.uniform(1.0, 1.45)
-            reward = int(base * urgency + amount * random.randint(15, 45))
+        mission_prefixes = ["Freight", "Courier", "Relief", "Charter", "Priority", "Survey"]
+        cargo_adjectives = [
+            "sealed",
+            "fragile",
+            "volatile",
+            "medical",
+            "industrial",
+            "scientific",
+            "diplomatic",
+            "agri",
+            "luxury",
+            "emergency",
+            "encrypted",
+        ]
+        cargo_nouns = [
+            "supplies",
+            "containers",
+            "pods",
+            "modules",
+            "kits",
+            "archives",
+            "prototypes",
+            "passengers",
+            "technicians",
+            "data cores",
+            "relief goods",
+        ]
+        unit_options = ["crate", "container", "pod", "module", "passenger", "team", "case"]
+
+        destination_pool = []
+        for radius in range(2, 13):
+            destination_pool = []
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    sector = (origin_sector[0] + dx, origin_sector[1] + dy)
+                    tile_distance = abs(dx) + abs(dy)
+                    if tile_distance <= 0:
+                        continue
+
+                    if len(sector_manager.get_sector_stations(sector[0], sector[1])) > 0:
+                        destination_pool.append((sector, "station", tile_distance))
+                    if len(sector_manager.get_sector_planets(sector[0], sector[1])) > 0:
+                        destination_pool.append((sector, "planet", tile_distance))
+
+            if len(destination_pool) >= max(6, job_count * 2):
+                break
+
+        if not destination_pool:
+            return jobs
+
+        weighted_pool = []
+        for sector, target_type, tile_distance in destination_pool:
+            weight = max(1, tile_distance)
+            weighted_pool.extend([(sector, target_type, tile_distance)] * weight)
+
+        attempts = 0
+        max_attempts = job_count * 20
+        while len(jobs) < job_count and attempts < max_attempts:
+            attempts += 1
+            target_sector, target_type, tile_distance = random.choice(weighted_pool)
+            if target_sector == origin_sector:
+                continue
+            target_key = (target_sector, target_type)
+            if target_key in used_targets:
+                continue
+            used_targets.add(target_key)
+
+            mission = random.choice(mission_prefixes)
+            payload = f"{random.choice(cargo_adjectives)} {random.choice(cargo_nouns)}"
+            unit_name = random.choice(unit_options)
+
+            base_amount = random.randint(1, 5) if unit_name in ("passenger", "team") else random.randint(2, 9)
+            amount = base_amount + max(0, tile_distance // 3)
+
+            risk_seed = tile_distance * 0.75 + random.uniform(0.0, 2.2)
+            if unit_name in ("passenger", "team"):
+                risk_seed += 0.35
+            if "volatile" in payload or "emergency" in payload:
+                risk_seed += 0.8
+
+            risk_rating = max(1, min(5, int(math.ceil(risk_seed / 2.2))))
+            attack_pressure = min(3.4, 1.0 + risk_rating * 0.24 + tile_distance * 0.06)
+            hazard_bonus = risk_rating * 35 + tile_distance * 8
+
+            reward_base = (
+                130
+                + tile_distance * random.randint(85, 150)
+                + amount * random.randint(16, 40)
+                + hazard_bonus
+            )
+            reward = int(reward_base * (1.0 + risk_rating * 0.14))
 
             jobs.append(
                 {
                     "origin": origin_type,
+                    "origin_sector": origin_sector,
                     "mission": mission,
                     "payload": payload,
                     "amount": amount,
                     "unit": unit_name,
                     "reward": reward,
-                    "distance": distance,
+                    "tile_distance": tile_distance,
+                    "risk_rating": risk_rating,
+                    "hazard_bonus": hazard_bonus,
+                    "attack_pressure": attack_pressure,
                     "target_sector": target_sector,
                     "target_type": target_type,
                 }
             )
+
         return jobs
 
+    def contract_attack_pressure():
+        if active_contract is None:
+            return 1.0
+        return max(1.0, float(active_contract.get("attack_pressure", 1.0)))
+
     def try_complete_contract():
-        nonlocal active_contract, station_message, station_message_timer
+        nonlocal active_contract, station_message, station_message_timer, available_jobs
         if active_contract is None:
             station_message = "No active contract selected"
             station_message_timer = 1.2
@@ -506,18 +770,24 @@ def main():
         station_message_timer = 1.8
         log_event("contract_complete", **active_contract, total_gold=player.credits)
         active_contract = None
+        if docked_context in ("station", "planet"):
+            available_jobs = generate_jobs(docked_context, origin_sector=active_sector)
 
     def handle_job_slot(job_index):
-        nonlocal active_contract, station_message, station_message_timer
+        nonlocal active_contract, station_message, station_message_timer, available_jobs
         if job_index < 0 or job_index >= len(available_jobs):
             return
         selected = available_jobs[job_index]
-        if active_contract == selected:
-            try_complete_contract()
+
+        if active_contract is not None:
+            station_message = "One active contract at a time"
+            station_message_timer = 1.5
             return
+
         active_contract = selected
+        del available_jobs[job_index]
         station_message = (
-            f"Tracking: {selected['mission']} ({selected['amount']} {selected['unit']}) -> "
+            f"Accepted: {selected['mission']} ({selected['amount']} {selected['unit']}) -> "
             f"{selected['target_type']} {selected['target_sector'][0]},{selected['target_sector'][1]}"
         )
         station_message_timer = 2.2
@@ -531,6 +801,9 @@ def main():
         nonlocal station_sprites_by_id, planet_sprites_by_id, world_offset, active_sector
         nonlocal destroyed_seed_asteroids
         nonlocal available_jobs, active_contract, explored_sectors, show_map_overlay
+        nonlocal live_sector_intel, persistent_sector_enemies, scanner_cooldown_timer, scanner_passive_timer
+        nonlocal enemy_field, base_enemy_spawn_interval, base_enemy_max_alive
+        nonlocal current_enemy_spawn_interval, current_enemy_max_alive
 
         updatable = pygame.sprite.Group()
         drawable = pygame.sprite.Group()
@@ -566,7 +839,7 @@ def main():
             upgrade_cost_multiplier=settings["upgrade_cost_multiplier"],
         )
 
-        EnemyField(
+        enemy_field = EnemyField(
             spawn_interval=settings["enemy_spawn"],
             spawn_weights=settings["enemy_weights"],
             spawn_tuning={
@@ -577,6 +850,10 @@ def main():
                 "max_alive": settings["enemy_max_alive"],
             },
         )
+        base_enemy_spawn_interval = settings["enemy_spawn"]
+        base_enemy_max_alive = settings["enemy_max_alive"]
+        current_enemy_spawn_interval = base_enemy_spawn_interval
+        current_enemy_max_alive = base_enemy_max_alive
         station_sprites_by_id = {}
         planet_sprites_by_id = {}
         destroyed_seed_asteroids = set()
@@ -596,11 +873,15 @@ def main():
         ship_explosion_fx = []
         targeting_locked_targets = []
         targeting_mode_timer = 0.0
-        available_jobs = generate_jobs("station")
+        available_jobs = generate_jobs("station", origin_sector=active_sector)
         active_contract = None
         explored_sectors = {}
+        live_sector_intel = {}
+        persistent_sector_enemies = {}
+        scanner_cooldown_timer = 0.0
+        scanner_passive_timer = 0.0
         show_map_overlay = False
-        capture_sector_snapshot(active_sector[0], active_sector[1])
+        capture_sector_snapshot(active_sector[0], active_sector[1], visited=True, charted=True)
         apply_scanner_reveal()
 
     def nearest_enemies_for_lock(max_locks):
@@ -744,7 +1025,7 @@ def main():
             sync_planet_sectors(force=True)
             sync_asteroid_sectors(force=True)
             if sector_changed:
-                capture_sector_snapshot(active_sector[0], active_sector[1])
+                capture_sector_snapshot(active_sector[0], active_sector[1], visited=True, charted=True)
                 apply_scanner_reveal()
                 station_message = f"Entered sector {active_sector[0]},{active_sector[1]}"
                 station_message_timer = 1.3
@@ -798,6 +1079,35 @@ def main():
 
         candidates.sort(key=lambda p: player.position.distance_to(p.position))
         return candidates[0]
+
+    def get_active_contract_station():
+        if active_contract is None or active_contract.get("target_type") != "station":
+            return None
+
+        target_sector = active_contract.get("target_sector")
+        if not target_sector:
+            return None
+
+        prefix = f"{target_sector[0]}:{target_sector[1]}:"
+        candidates = [
+            station
+            for station_id, station in station_sprites_by_id.items()
+            if station_id.startswith(prefix)
+        ]
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda s: player.position.distance_to(s.position))
+        return candidates[0]
+
+    def get_active_contract_target_object():
+        if active_contract is None:
+            return None
+        if active_contract.get("target_type") == "planet":
+            return get_active_contract_planet()
+        if active_contract.get("target_type") == "station":
+            return get_active_contract_station()
+        return None
 
     def draw_dotted_line(start, end, color, dash=10, gap=7, width=2):
         delta = end - start
@@ -888,9 +1198,9 @@ def main():
             offset_surface = hud_font.render(offset_text, True, "#cbd5e1")
             screen.blit(offset_surface, (int(label_pos.x), int(label_pos.y + 16)))
 
-    def contract_target_hint_point(target_planet):
-        if target_planet is not None:
-            return target_planet.position
+    def contract_target_hint_point(target_obj):
+        if target_obj is not None:
+            return target_obj.position
 
         if active_contract is None:
             return None
@@ -1039,6 +1349,32 @@ def main():
     def update_play_state():
         nonlocal station_message, station_message_timer
         nonlocal targeting_mode_timer, targeting_locked_targets
+        nonlocal current_enemy_spawn_interval, current_enemy_max_alive
+        nonlocal scanner_cooldown_timer, scanner_passive_timer
+
+        if enemy_field is not None:
+            pressure = contract_attack_pressure()
+            current_enemy_spawn_interval = max(0.55, base_enemy_spawn_interval / pressure)
+            current_enemy_max_alive = max(
+                1,
+                int(round(base_enemy_max_alive * (0.85 + 0.45 * max(0.0, pressure - 1.0)))),
+            )
+            enemy_field.spawn_interval = current_enemy_spawn_interval
+            enemy_field.spawn_tuning["max_alive"] = current_enemy_max_alive
+
+        if player is not None:
+            scanner_cooldown_timer = max(0.0, scanner_cooldown_timer - dt)
+            update_persistent_sector_enemies(dt)
+            sync_active_sector_enemies_to_persistent()
+
+            # Passive ping at scanner capstone level.
+            if player.scanner_level >= 4:
+                scanner_passive_timer += dt
+                if scanner_passive_timer >= 9.0:
+                    perform_scanner_pulse(active_sector, force=True)
+                    scanner_passive_timer = 0.0
+
+        # Scanned sector snapshots are persistent until rescanned.
 
         if targeting_mode_timer > 0 and player is not None:
             targeting_mode_timer = max(0.0, targeting_mode_timer - dt)
@@ -1179,6 +1515,7 @@ def main():
 
         # Build menu buttons each frame (centered panel)
         menu_panel = pygame.Rect(SCREEN_WIDTH // 2 - 350, SCREEN_HEIGHT // 2 - 280, 700, 560)
+        map_panel_rect = pygame.Rect(70, 50, SCREEN_WIDTH - 140, SCREEN_HEIGHT - 100)
         menu_ui["action"] = pygame.Rect(menu_panel.centerx - 110, menu_panel.y + 392, 220, 42)
         menu_ui["quit"] = pygame.Rect(menu_panel.centerx - 110, menu_panel.y + 440, 220, 42)
         menu_ui["controls"] = pygame.Rect(menu_panel.centerx - 110, menu_panel.y + 488, 220, 28)
@@ -1243,6 +1580,9 @@ def main():
                     play_sfx("pause")
                 elif game_state in ("menu", "paused") and has_active_game:
                     show_map_overlay = not show_map_overlay
+                    if not show_map_overlay:
+                        # Closing map should immediately return to live gameplay.
+                        game_state = "playing"
                     play_sfx("ui_click")
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
@@ -1253,19 +1593,65 @@ def main():
                     god_mode = not god_mode
                     state_text = "ON" if god_mode else "OFF"
                     credit_boost = 0
+                    upgrades_granted = 0
                     if god_mode and player is not None:
                         needed = player.credits_needed_for_full_upgrades()
                         if needed > player.credits:
                             credit_boost = needed - player.credits
                             player.credits += credit_boost
 
+                        before_total = (
+                            player.fire_rate_level
+                            + player.shield_level
+                            + player.multishot_level
+                            + player.targeting_beam_level
+                            + player.targeting_computer_level
+                            + player.warp_drive_level
+                            + player.scanner_level
+                        )
+
+                        while player.buy_fire_rate_upgrade()[0]:
+                            pass
+                        while player.buy_shield_upgrade()[0]:
+                            pass
+                        while player.buy_multishot_upgrade()[0]:
+                            pass
+                        while player.buy_targeting_beam_upgrade()[0]:
+                            pass
+                        while player.buy_targeting_computer_upgrade()[0]:
+                            pass
+                        while player.buy_warp_drive_upgrade()[0]:
+                            pass
+                        while player.buy_scanner_upgrade()[0]:
+                            pass
+
+                        player.refill_shields()
+                        player.warp_energy = player.get_warp_capacity_seconds()
+                        apply_scanner_reveal()
+
+                        after_total = (
+                            player.fire_rate_level
+                            + player.shield_level
+                            + player.multishot_level
+                            + player.targeting_beam_level
+                            + player.targeting_computer_level
+                            + player.warp_drive_level
+                            + player.scanner_level
+                        )
+                        upgrades_granted = max(0, after_total - before_total)
+
                     station_message = (
-                        f"DEV GOD MODE: {state_text} (+{credit_boost} cr)"
-                        if credit_boost > 0
+                        f"DEV GOD MODE: {state_text} (+{credit_boost} cr, +{upgrades_granted} upgrades)"
+                        if god_mode
                         else f"DEV GOD MODE: {state_text}"
                     )
                     station_message_timer = 1.8
-                    log_event("dev_god_mode", enabled=god_mode, credit_boost=credit_boost)
+                    log_event(
+                        "dev_god_mode",
+                        enabled=god_mode,
+                        credit_boost=credit_boost,
+                        upgrades_granted=upgrades_granted,
+                    )
                     play_sfx("ui_click")
                 elif event.key == pygame.K_t:
                     if player is None or player.targeting_computer_level <= 0:
@@ -1318,8 +1704,7 @@ def main():
                         docked_context = "station"
                         docked_planet = None
                         station_tab = "upgrade"
-                        if not available_jobs:
-                            available_jobs = generate_jobs("station")
+                        available_jobs = generate_jobs("station", origin_sector=active_sector)
                         if player.shield_level > 0:
                             player.refill_shields()
                         station_message = "Docked at station. Upgrade bay online."
@@ -1329,8 +1714,7 @@ def main():
                         is_docked = True
                         docked_context = "planet"
                         docked_planet = near_planet
-                        if not available_jobs:
-                            available_jobs = generate_jobs("planet")
+                        available_jobs = generate_jobs("planet", origin_sector=active_sector)
                         station_message = f"Landed on planet ({near_planet.accepted_metal} market)."
                         station_message_timer = 2.0
                         play_sfx("dock")
@@ -1354,7 +1738,9 @@ def main():
                     station_action = resolve_station_click(mouse_pos, station_tab, station_ui)
                     if station_action == "undock":
                         undock()
-                    elif station_action.startswith("job:"):
+                    elif station_action == "deliver_contract":
+                        try_complete_contract()
+                    elif station_action and station_action.startswith("job:"):
                         handle_job_slot(int(station_action.split(":", 1)[1]))
                     elif station_action in upgrade_click_actions:
                         upgrade_click_actions[station_action]()
@@ -1364,7 +1750,9 @@ def main():
                         undock()
                     elif planet_action == "trade":
                         sell_to_planet(docked_planet)
-                    elif planet_action.startswith("job:"):
+                    elif planet_action == "deliver_contract":
+                        try_complete_contract()
+                    elif planet_action and planet_action.startswith("job:"):
                         handle_job_slot(int(planet_action.split(":", 1)[1]))
 
             if (
@@ -1373,6 +1761,35 @@ def main():
                 and game_state in ("menu", "paused")
             ):
                 mouse_pos = event.pos
+
+                if show_map_overlay and has_active_game and map_panel_rect.collidepoint(mouse_pos):
+                    scanned_sector = map_sector_at_point(map_panel_rect, active_sector, mouse_pos)
+                    if scanned_sector is not None:
+                        if player is None or player.scanner_level <= 0:
+                            station_message = "Need scanner upgrade to remote scan"
+                            station_message_timer = 1.4
+                            play_sfx("ui_click")
+                            continue
+
+                        if abs(scanned_sector[0] - active_sector[0]) > 1 or abs(scanned_sector[1] - active_sector[1]) > 1:
+                            station_message = "Scan range limited to 3x3 around your sector"
+                            station_message_timer = 1.4
+                            play_sfx("ui_click")
+                            continue
+
+                        scanned_count = perform_scanner_pulse(scanned_sector)
+                        if scanned_count > 0:
+                            station_message = (
+                                f"Scan pulse: {scanned_count} sector"
+                                f"{'s' if scanned_count != 1 else ''}"
+                            )
+                            station_message_timer = 1.2
+                            play_sfx("upgrade")
+                        else:
+                            station_message = f"Scanner cooling down: {scanner_cooldown_timer:.1f}s"
+                            station_message_timer = 1.1
+                            play_sfx("ui_click")
+                        continue
 
                 if menu_ui["easy"].collidepoint(mouse_pos):
                     selected_difficulty = "easy"
@@ -1405,6 +1822,9 @@ def main():
                 elif menu_ui["map"].collidepoint(mouse_pos) and has_active_game:
                     play_sfx("ui_click")
                     show_map_overlay = not show_map_overlay
+                    if not show_map_overlay:
+                        # Closing map from pause/menu resumes the run immediately.
+                        game_state = "playing"
                 elif show_audio_overlay and menu_ui["music_slider"].collidepoint(mouse_pos):
                     set_slider_volume("music", mouse_pos[0])
                     audio_slider_dragging = "music"
@@ -1541,58 +1961,46 @@ def main():
             draw_ship_explosion_fx(screen, ship_explosion_fx)
             step_and_draw_metal_pickup_fx(screen, metal_pickup_fx, dt)
 
-            cargo_text = hud_font.render(
-                f"Cargo: {player.total_metal_units()} metal", True, "white"
+            draw_hud_chip(f"Cargo {player.total_metal_units()} metal", 10, SCREEN_HEIGHT - 34)
+            draw_hud_chip(f"Gold {player.credits}", SCREEN_WIDTH - 194, SCREEN_HEIGHT - 34, UI_COLORS["accent"])
+
+            draw_hud_chip(f"Shields {player.shield_layers}/{player.shield_level}", 10, 34, (125, 211, 252))
+            draw_hud_chip(
+                f"Multishot L{player.multishot_level} ({len(player.multishot_pattern())} shots)",
+                10,
+                58,
+                (196, 181, 253),
             )
-            screen.blit(cargo_text, (10, SCREEN_HEIGHT - 30))
-
-            gold_text = hud_font.render(f"Gold: {player.credits}", True, "gold")
-            screen.blit(gold_text, (SCREEN_WIDTH - 180, SCREEN_HEIGHT - 30))
-
-            shield_text = hud_font.render(
-                f"Shields: {player.shield_layers}/{player.shield_level}",
-                True,
-                "#7dd3fc",
+            draw_hud_chip(f"Targeting Beam L{player.targeting_beam_level}", 10, 82, UI_COLORS["accent_alt"])
+            draw_hud_chip(
+                f"Targeting Computer L{player.targeting_computer_level} ({player.targeting_computer_level} locks)",
+                10,
+                106,
+                UI_COLORS["accent_alt"],
             )
-            screen.blit(shield_text, (10, 34))
-
-            multishot_text = hud_font.render(
-                f"Multishot: L{player.multishot_level} ({len(player.multishot_pattern())} shots)",
-                True,
-                "#c4b5fd",
-            )
-            screen.blit(multishot_text, (10, 56))
-
-            beam_text = hud_font.render(
-                f"Targeting Beam: L{player.targeting_beam_level}",
-                True,
-                "#93c5fd",
-            )
-            screen.blit(beam_text, (10, 78))
-
-            tcomp_text = hud_font.render(
-                f"Targeting Computer: L{player.targeting_computer_level} ({player.targeting_computer_level} locks)",
-                True,
-                "#93c5fd",
-            )
-            screen.blit(tcomp_text, (10, 100))
-
-            warp_text = hud_font.render(
+            draw_hud_chip(
                 (
-                    f"Sublight Warp: L{player.warp_drive_level} "
+                    f"Sublight Warp L{player.warp_drive_level} "
                     f"{player.warp_energy:.1f}/{player.get_warp_capacity_seconds():.1f}s"
                 ),
-                True,
-                "#f9a8d4" if player.warp_boosting else "#fbcfe8",
+                10,
+                130,
+                (249, 168, 212) if player.warp_boosting else (251, 207, 232),
             )
-            screen.blit(warp_text, (10, 122))
+            draw_hud_chip(
+                f"Sector {active_sector[0]},{active_sector[1]}  Seed {world_seed}",
+                10,
+                154,
+                UI_COLORS["muted"],
+            )
 
-            sector_text = hud_font.render(
-                f"Sector: {active_sector[0]},{active_sector[1]}  Seed: {world_seed}",
-                True,
-                "#94a3b8",
-            )
-            screen.blit(sector_text, (10, 144))
+            if scanner_cooldown_timer > 0:
+                draw_hud_chip(
+                    f"Scanner Cooldown {scanner_cooldown_timer:.1f}s",
+                    10,
+                    178,
+                    UI_COLORS["warn"],
+                )
 
             if not is_docked and game_state == "playing":
                 near_station = nearest_station_in_range()
@@ -1609,41 +2017,55 @@ def main():
                 )
 
                 if near_station is not None and station_dist <= planet_dist:
-                    dock_prompt = hud_font.render("Press E at Station: Upgrade", True, "yellow")
-                    screen.blit(dock_prompt, (10, SCREEN_HEIGHT - 55))
+                    draw_hud_chip("Press E at Station: Upgrade", 10, SCREEN_HEIGHT - 60, UI_COLORS["accent"])
                 elif near_planet is not None:
-                    trade_prompt = hud_font.render(
+                    draw_hud_chip(
                         f"Press E at Planet: Land ({near_planet.accepted_metal} market)",
-                        True,
-                        "yellow",
+                        10,
+                        SCREEN_HEIGHT - 60,
+                        UI_COLORS["accent"],
                     )
-                    screen.blit(trade_prompt, (10, SCREEN_HEIGHT - 55))
 
             if active_contract is not None:
+                risk_rating = int(active_contract.get("risk_rating", 1))
                 contract_text = hud_font.render(
                     (
                         f"Contract: {active_contract['mission']} "
-                        f"({active_contract['amount']} {active_contract['unit']}) -> "
+                        f"({active_contract['amount']} {active_contract['unit']}, "
+                        f"{active_contract.get('tile_distance', 0)} tiles, R{risk_rating}/5) -> "
                         f"{active_contract['target_type']} {active_contract['target_sector'][0]},"
                         f"{active_contract['target_sector'][1]}"
                     ),
                     True,
-                    "#f6d365",
+                    UI_COLORS["accent"],
                 )
-                screen.blit(contract_text, (10, SCREEN_HEIGHT - 104))
+                contract_bg = pygame.Rect(8, SCREEN_HEIGHT - 132, contract_text.get_width() + 20, 48)
+                pygame.draw.rect(screen, (9, 16, 29, 188), contract_bg, border_radius=8)
+                pygame.draw.rect(screen, (58, 76, 106), contract_bg, 1, border_radius=8)
+                screen.blit(contract_text, (18, SCREEN_HEIGHT - 128))
 
-                target_planet = get_active_contract_planet()
-                if target_planet is not None:
+                threat_text = hud_font.render(
+                    (
+                        f"Threat: R{risk_rating}/5  Spawn {current_enemy_spawn_interval:.2f}s"
+                        f"  Cap {current_enemy_max_alive}"
+                    ),
+                    True,
+                    UI_COLORS["warn"],
+                )
+                screen.blit(threat_text, (18, SCREEN_HEIGHT - 106))
+
+                target_obj = get_active_contract_target_object()
+                if target_obj is not None:
                     draw_dotted_line(
                         player.position,
-                        target_planet.position,
+                        target_obj.position,
                         (246, 211, 101),
                         dash=9,
                         gap=7,
                         width=2,
                     )
 
-                target_hint = contract_target_hint_point(target_planet)
+                target_hint = contract_target_hint_point(target_obj)
                 if target_hint is not None:
                     inset_view = pygame.Rect(26, 26, SCREEN_WIDTH - 52, SCREEN_HEIGHT - 52)
                     if not inset_view.collidepoint((target_hint.x, target_hint.y)):
@@ -1658,8 +2080,7 @@ def main():
                         )
 
             if station_message_timer > 0 and station_message:
-                flash = hud_font.render(station_message, True, "yellow")
-                screen.blit(flash, (10, SCREEN_HEIGHT - 80))
+                draw_hud_chip(station_message, 10, SCREEN_HEIGHT - 88, UI_COLORS["accent"])
 
             if game_state == "playing":
                 controls_lines = ["Esc: Pause"]
@@ -1668,15 +2089,12 @@ def main():
                     screen.blit(control_surface, (SCREEN_WIDTH - 290, 10 + idx * 20))
 
                 if god_mode:
-                    god_text = hud_font.render("GODMODE ACTIVE", True, "#f87171")
-                    screen.blit(god_text, (10, 10))
+                    draw_hud_chip("GODMODE ACTIVE", 10, 10, UI_COLORS["danger"])
 
             if music_loaded:
                 music_state = "Muted" if all_audio_muted or music_muted else "On"
-                music_text = hud_font.render(f"Music: {music_state}", True, "#cbd5e1")
-                screen.blit(music_text, (SCREEN_WIDTH - 180, SCREEN_HEIGHT - 54))
-                source_text = hud_font.render(f"Track: {music_source}", True, "#94a3b8")
-                screen.blit(source_text, (SCREEN_WIDTH - 280, SCREEN_HEIGHT - 78))
+                draw_hud_chip(f"Music {music_state}", SCREEN_WIDTH - 180, SCREEN_HEIGHT - 58, UI_COLORS["muted"])
+                draw_hud_chip(f"Track {music_source}", SCREEN_WIDTH - 300, SCREEN_HEIGHT - 82, UI_COLORS["muted"])
 
         if game_state == "playing" and is_docked and has_active_game:
             overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -1693,6 +2111,9 @@ def main():
                     station_ui,
                     metal_prices,
                     available_jobs,
+                    active_contract,
+                    active_sector,
+                    docked_context,
                     panel_font,
                     hud_font,
                 )
@@ -1704,6 +2125,9 @@ def main():
                     docked_planet,
                     metal_prices,
                     available_jobs,
+                    active_contract,
+                    active_sector,
+                    docked_context,
                     panel_font,
                     hud_font,
                     planet_ui,
@@ -1746,11 +2170,13 @@ def main():
         if game_state in ("menu", "paused") and has_active_game and show_map_overlay:
             draw_map_panel(
                 screen,
-                pygame.Rect(70, 50, SCREEN_WIDTH - 140, SCREEN_HEIGHT - 100),
+                map_panel_rect,
                 active_sector,
                 explored_sectors,
                 player.scanner_level if player else 0,
                 active_contract,
+                live_sector_intel,
+                scanner_cooldown_timer,
                 title_font,
                 panel_font,
                 hud_font,

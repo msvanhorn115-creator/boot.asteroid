@@ -8,6 +8,11 @@ from constants import (
     UPGRADE_TARGETING_COMPUTER_MAX_LEVEL,
     UPGRADE_WARP_DRIVE_MAX_LEVEL,
     UPGRADE_SCANNER_MAX_LEVEL,
+    UPGRADE_MISSILE_MAX_LEVEL,
+    UPGRADE_CLOAK_MAX_LEVEL,
+    UPGRADE_CARGO_HOLD_MAX_LEVEL,
+    UPGRADE_ACCOMMODATIONS_MAX_LEVEL,
+    UPGRADE_ENGINE_TUNING_MAX_LEVEL,
 )
 
 
@@ -19,6 +24,11 @@ UPGRADE_BUTTON_KEYS = [
     "buy_targeting_computer",
     "buy_warp_drive",
     "buy_scanner",
+    "buy_missile",
+    "buy_cloak",
+    "buy_cargo_hold",
+    "buy_accommodations",
+    "buy_engine_tuning",
 ]
 
 
@@ -58,6 +68,31 @@ def compute_upgrade_cost_texts(player):
         if player.scanner_level >= UPGRADE_SCANNER_MAX_LEVEL
         else f"{player.get_scanner_upgrade_cost()} gold"
     )
+    missile_cost_text = (
+        "MAXED"
+        if player.missile_level >= UPGRADE_MISSILE_MAX_LEVEL
+        else f"{player.get_missile_upgrade_cost()} gold"
+    )
+    cloak_cost_text = (
+        "MAXED"
+        if player.cloak_level >= UPGRADE_CLOAK_MAX_LEVEL
+        else f"{player.get_cloak_upgrade_cost()} gold"
+    )
+    cargo_hold_cost_text = (
+        "MAXED"
+        if player.cargo_hold_level >= UPGRADE_CARGO_HOLD_MAX_LEVEL
+        else f"{player.get_cargo_hold_upgrade_cost()} gold"
+    )
+    accommodations_cost_text = (
+        "MAXED"
+        if player.accommodations_level >= UPGRADE_ACCOMMODATIONS_MAX_LEVEL
+        else f"{player.get_accommodations_upgrade_cost()} gold"
+    )
+    engine_tuning_cost_text = (
+        "MAXED"
+        if player.engine_tuning_level >= UPGRADE_ENGINE_TUNING_MAX_LEVEL
+        else f"{player.get_engine_tuning_upgrade_cost()} gold"
+    )
 
     return {
         "buy_fire_rate": fire_cost_text,
@@ -67,6 +102,11 @@ def compute_upgrade_cost_texts(player):
         "buy_targeting_computer": targeting_computer_cost_text,
         "buy_warp_drive": warp_drive_cost_text,
         "buy_scanner": scanner_cost_text,
+        "buy_missile": missile_cost_text,
+        "buy_cloak": cloak_cost_text,
+        "buy_cargo_hold": cargo_hold_cost_text,
+        "buy_accommodations": accommodations_cost_text,
+        "buy_engine_tuning": engine_tuning_cost_text,
     }
 
 
@@ -82,25 +122,59 @@ def build_upgrade_lines(player):
             f" | Charge: {player.warp_energy:.1f}/{player.get_warp_capacity_seconds():.1f}s"
         ),
         f"Scanner Array L{player.scanner_level} | Cartography detail +{player.scanner_level}",
+        (
+            f"Missiles L{player.missile_level} | Cooldown: "
+            f"{player.missile_cooldown_seconds():.2f}s"
+        ),
+        (
+            f"Cloak L{player.cloak_level} | Duration: "
+            f"{player.get_cloak_capacity_seconds():.1f}s"
+        ),
+        (
+            f"Cargo Hold L{player.cargo_hold_level} | Capacity: "
+            f"{player.get_cargo_capacity_units()} units"
+        ),
+        (
+            f"Accommodations L{player.accommodations_level} | Capacity: "
+            f"{player.get_accommodations_capacity()}"
+        ),
+        (
+            f"Engine Tuning L{player.engine_tuning_level} | "
+            f"Speed x{player.get_engine_speed_multiplier():.2f}"
+        ),
     ]
 
 
 def build_upgrade_button_rects(panel_rect):
-    left_width = max(260, min(360, panel_rect.width // 2 - 56))
-    y_starts = {
-        "buy_fire_rate": 210,
-        "buy_shield": 246,
-        "buy_multishot": 282,
-        "buy_targeting_beam": 318,
-        "buy_targeting_computer": 354,
-        "buy_warp_drive": 390,
-        "buy_scanner": 426,
-    }
+    col_width = max(220, min(290, panel_rect.width // 2 - 64))
+    left_x = panel_rect.x + 20
+    right_x = left_x + col_width + 16
+    y0 = panel_rect.y + 210
+    step = 34
 
-    return {
-        key: pygame.Rect(panel_rect.x + 20, panel_rect.y + y_value, left_width, 38)
-        for key, y_value in y_starts.items()
-    }
+    ordered = [
+        "buy_fire_rate",
+        "buy_shield",
+        "buy_multishot",
+        "buy_targeting_beam",
+        "buy_targeting_computer",
+        "buy_warp_drive",
+        "buy_scanner",
+        "buy_missile",
+        "buy_cloak",
+        "buy_cargo_hold",
+        "buy_accommodations",
+        "buy_engine_tuning",
+    ]
+
+    rects = {}
+    for idx, key in enumerate(ordered):
+        col = idx % 2
+        row = idx // 2
+        x = left_x if col == 0 else right_x
+        y = y0 + row * step
+        rects[key] = pygame.Rect(x, y, col_width, 30)
+    return rects
 
 
 def build_upgrade_button_labels(cost_texts):
@@ -114,4 +188,9 @@ def build_upgrade_button_labels(cost_texts):
         ),
         "buy_warp_drive": f"Upgrade Sublight Warp ({cost_texts['buy_warp_drive']})",
         "buy_scanner": f"Upgrade Scanner Array ({cost_texts['buy_scanner']})",
+        "buy_missile": f"Upgrade Missiles ({cost_texts['buy_missile']})",
+        "buy_cloak": f"Upgrade Cloak ({cost_texts['buy_cloak']})",
+        "buy_cargo_hold": f"Upgrade Cargo Hold ({cost_texts['buy_cargo_hold']})",
+        "buy_accommodations": f"Upgrade Accommodations ({cost_texts['buy_accommodations']})",
+        "buy_engine_tuning": f"Upgrade Engine Tuning ({cost_texts['buy_engine_tuning']})",
     }

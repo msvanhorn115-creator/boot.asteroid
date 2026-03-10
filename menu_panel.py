@@ -99,7 +99,7 @@ def draw_menu_panel(
         screen.blit(hint, (menu_panel.x + 182, menu_panel.y + 306))
 
     if show_controls_overlay:
-        controls_panel = pygame.Rect(menu_panel.x - 300, menu_panel.y + 28, 270, 360)
+        controls_panel = pygame.Rect(menu_panel.x - 300, menu_panel.y + 28, 270, 400)
         draw_panel(screen, controls_panel, border_color=UI_COLORS["accent_alt"], fill_key="panel_soft")
         controls_title = panel_font.render("Controls", True, UI_COLORS["accent_alt"])
         screen.blit(controls_title, (controls_panel.x + 62, controls_panel.y + 16))
@@ -109,16 +109,21 @@ def draw_menu_panel(
             "Up/Down: Thrust / Reverse",
             "W: Sublight boost",
             "Space: Shoot",
+            "F: Fire missile",
+            "C: Claim nearby site",
+            "B: Build station/defense",
+            "I: Ship systems panel",
+            "M: Sector map",
+            "V: Toggle cloak",
             "E: Station dock / Planet trade",
             "T: Targeting computer",
-            "M: Sector map",
             "D: Dev god mode",
             "Mouse: Station buttons",
-            "Esc: Pause / Quit from pause",
+            "Esc: Pause (Esc again from pause quits)",
         ]
         for idx, line in enumerate(controls_lines):
             line_surface = hud_font.render(line, True, UI_COLORS["muted"])
-            screen.blit(line_surface, (controls_panel.x + 14, controls_panel.y + 74 + idx * 30))
+            screen.blit(line_surface, (controls_panel.x + 14, controls_panel.y + 74 + idx * 24))
 
     if show_audio_overlay:
         audio_panel = pygame.Rect(menu_panel.right + 16, menu_panel.y + 56, 280, 230)

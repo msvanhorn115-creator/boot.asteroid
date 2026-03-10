@@ -31,6 +31,21 @@ from constants import (
     UPGRADE_SCANNER_BASE_COST,
     UPGRADE_SCANNER_STEP_COST,
     UPGRADE_SCANNER_MAX_LEVEL,
+    UPGRADE_MISSILE_BASE_COST,
+    UPGRADE_MISSILE_STEP_COST,
+    UPGRADE_MISSILE_MAX_LEVEL,
+    UPGRADE_CLOAK_BASE_COST,
+    UPGRADE_CLOAK_STEP_COST,
+    UPGRADE_CLOAK_MAX_LEVEL,
+    UPGRADE_CARGO_HOLD_BASE_COST,
+    UPGRADE_CARGO_HOLD_STEP_COST,
+    UPGRADE_CARGO_HOLD_MAX_LEVEL,
+    UPGRADE_ACCOMMODATIONS_BASE_COST,
+    UPGRADE_ACCOMMODATIONS_STEP_COST,
+    UPGRADE_ACCOMMODATIONS_MAX_LEVEL,
+    UPGRADE_ENGINE_TUNING_BASE_COST,
+    UPGRADE_ENGINE_TUNING_STEP_COST,
+    UPGRADE_ENGINE_TUNING_MAX_LEVEL,
 )
 from circleshape import CircleShape
 from shot import Shot
@@ -58,6 +73,16 @@ class Player(CircleShape):
         self.warp_boosting = False
         self.scanner_level = 0
         self.upgrade_cost_multiplier = 1.0
+        self.combat_level = 1
+        self.combat_xp = 0
+        self.missile_level = 0
+        self.missile_timer = 0.0
+        self.cloak_level = 0
+        self.cloak_active = False
+        self.cloak_timer = 0.0
+        self.cargo_hold_level = 0
+        self.accommodations_level = 0
+        self.engine_tuning_level = 0
 
     def configure_difficulty(
         self,
@@ -250,6 +275,117 @@ class Player(CircleShape):
         self.scanner_level += 1
         return True, f"Scanner array upgraded to L{self.scanner_level}"
 
+    def get_missile_upgrade_cost(self):
+        base_cost = UPGRADE_MISSILE_BASE_COST + (self.missile_level * UPGRADE_MISSILE_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_missile_upgrade(self):
+        if self.missile_level >= UPGRADE_MISSILE_MAX_LEVEL:
+            return False, "Missiles already maxed"
+
+        cost = self.get_missile_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.missile_level += 1
+        return True, f"Missiles upgraded to L{self.missile_level}"
+
+    def missile_cooldown_seconds(self):
+        # Faster reload at higher missile levels.
+        return max(2.4, 6.0 - self.missile_level * 0.85)
+
+    def get_cloak_upgrade_cost(self):
+        base_cost = UPGRADE_CLOAK_BASE_COST + (self.cloak_level * UPGRADE_CLOAK_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_cloak_upgrade(self):
+        if self.cloak_level >= UPGRADE_CLOAK_MAX_LEVEL:
+            return False, "Cloak already maxed"
+
+        cost = self.get_cloak_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.cloak_level += 1
+        return True, f"Cloak upgraded to L{self.cloak_level}"
+
+    def get_cloak_capacity_seconds(self):
+        return [0.0, 2.8, 4.6, 6.6, 9.0][max(0, min(UPGRADE_CLOAK_MAX_LEVEL, self.cloak_level))]
+
+    def get_cargo_capacity_units(self):
+        return [80, 120, 170, 230, 300][max(0, min(UPGRADE_CARGO_HOLD_MAX_LEVEL, self.cargo_hold_level))]
+
+    def get_accommodations_capacity(self):
+        return [0, 2, 4, 7, 10][max(0, min(UPGRADE_ACCOMMODATIONS_MAX_LEVEL, self.accommodations_level))]
+
+    def get_engine_speed_multiplier(self):
+        return [1.0, 1.08, 1.17, 1.28, 1.4][max(0, min(UPGRADE_ENGINE_TUNING_MAX_LEVEL, self.engine_tuning_level))]
+
+    def get_cargo_hold_upgrade_cost(self):
+        base_cost = UPGRADE_CARGO_HOLD_BASE_COST + (self.cargo_hold_level * UPGRADE_CARGO_HOLD_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_cargo_hold_upgrade(self):
+        if self.cargo_hold_level >= UPGRADE_CARGO_HOLD_MAX_LEVEL:
+            return False, "Cargo hold already maxed"
+
+        cost = self.get_cargo_hold_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.cargo_hold_level += 1
+        return True, f"Cargo hold upgraded to L{self.cargo_hold_level}"
+
+    def get_accommodations_upgrade_cost(self):
+        base_cost = UPGRADE_ACCOMMODATIONS_BASE_COST + (self.accommodations_level * UPGRADE_ACCOMMODATIONS_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_accommodations_upgrade(self):
+        if self.accommodations_level >= UPGRADE_ACCOMMODATIONS_MAX_LEVEL:
+            return False, "Accommodations already maxed"
+
+        cost = self.get_accommodations_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.accommodations_level += 1
+        return True, f"Accommodations upgraded to L{self.accommodations_level}"
+
+    def get_engine_tuning_upgrade_cost(self):
+        base_cost = UPGRADE_ENGINE_TUNING_BASE_COST + (self.engine_tuning_level * UPGRADE_ENGINE_TUNING_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_engine_tuning_upgrade(self):
+        if self.engine_tuning_level >= UPGRADE_ENGINE_TUNING_MAX_LEVEL:
+            return False, "Engine tuning already maxed"
+
+        cost = self.get_engine_tuning_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.engine_tuning_level += 1
+        return True, f"Engine tuning upgraded to L{self.engine_tuning_level}"
+
+    def disable_cloak(self):
+        self.cloak_active = False
+        self.cloak_timer = 0.0
+
+    def toggle_cloak(self):
+        if self.cloak_level <= 0:
+            return False, "Need cloak upgrade"
+        if self.cloak_active:
+            self.disable_cloak()
+            return True, "Cloak disengaged"
+
+        self.cloak_active = True
+        self.cloak_timer = self.get_cloak_capacity_seconds()
+        return True, f"Cloak engaged ({self.cloak_timer:.1f}s)"
+
     def get_lock_cone_degrees(self):
         if self.targeting_computer_level <= 0:
             return 0.0
@@ -259,6 +395,28 @@ class Player(CircleShape):
         if self.targeting_computer_level <= 0:
             return 999.0
         return [999.0, 0.45, 0.28, 0.15][self.targeting_computer_level]
+
+    def xp_needed_for_next_combat_level(self):
+        lvl = max(1, int(self.combat_level))
+        # Gentle early ramp, steeper later so progression remains meaningful.
+        return int(60 + (lvl - 1) * 34 + ((lvl - 1) ** 2) * 7)
+
+    def award_combat_xp(self, amount):
+        gained_levels = 0
+        self.combat_xp += max(0, int(amount))
+
+        while self.combat_xp >= self.xp_needed_for_next_combat_level():
+            self.combat_xp -= self.xp_needed_for_next_combat_level()
+            self.combat_level += 1
+            gained_levels += 1
+
+        return gained_levels
+
+    def get_combat_damage_multiplier(self):
+        return 1.0 + max(0, self.combat_level - 1) * 0.07
+
+    def get_combat_damage(self):
+        return self.get_combat_damage_multiplier()
 
     def credits_needed_for_full_upgrades(self):
         needed = 0
@@ -298,6 +456,26 @@ class Player(CircleShape):
 
         for lvl in range(self.scanner_level, UPGRADE_SCANNER_MAX_LEVEL):
             base_cost = UPGRADE_SCANNER_BASE_COST + (lvl * UPGRADE_SCANNER_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.missile_level, UPGRADE_MISSILE_MAX_LEVEL):
+            base_cost = UPGRADE_MISSILE_BASE_COST + (lvl * UPGRADE_MISSILE_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.cloak_level, UPGRADE_CLOAK_MAX_LEVEL):
+            base_cost = UPGRADE_CLOAK_BASE_COST + (lvl * UPGRADE_CLOAK_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.cargo_hold_level, UPGRADE_CARGO_HOLD_MAX_LEVEL):
+            base_cost = UPGRADE_CARGO_HOLD_BASE_COST + (lvl * UPGRADE_CARGO_HOLD_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.accommodations_level, UPGRADE_ACCOMMODATIONS_MAX_LEVEL):
+            base_cost = UPGRADE_ACCOMMODATIONS_BASE_COST + (lvl * UPGRADE_ACCOMMODATIONS_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.engine_tuning_level, UPGRADE_ENGINE_TUNING_MAX_LEVEL):
+            base_cost = UPGRADE_ENGINE_TUNING_BASE_COST + (lvl * UPGRADE_ENGINE_TUNING_STEP_COST)
             needed += int(round(base_cost * cost_multiplier))
 
         return needed
@@ -424,12 +602,15 @@ class Player(CircleShape):
     def move(self, dt):
         unit_vector = pygame.Vector2(0, 1)
         rotated_vector = unit_vector.rotate(self.rotation)
-        rotated_with_speed_vector = rotated_vector * PLAYER_SPEED * dt
+        rotated_with_speed_vector = rotated_vector * PLAYER_SPEED * self.get_engine_speed_multiplier() * dt
         self.position += rotated_with_speed_vector
 
     def shoot(self):
         if self.shoot_timer > 0:
             return
+
+        if self.cloak_active:
+            self.disable_cloak()
 
         self.shoot_timer = self.shoot_cooldown
         for spread in self.multishot_pattern():
@@ -440,8 +621,25 @@ class Player(CircleShape):
         if self.on_shoot is not None:
             self.on_shoot()
 
+    def shoot_missile(self):
+        if self.missile_level <= 0 or self.missile_timer > 0.0:
+            return False
+
+        if self.cloak_active:
+            self.disable_cloak()
+
+        self.missile_timer = self.missile_cooldown_seconds()
+        shot = Shot(self.position.x, self.position.y, SHOT_RADIUS + 2, owner="player_missile")
+        shot.velocity = pygame.Vector2(0, 1).rotate(self.rotation) * (PLAYER_SHOOT_SPEED * 0.8)
+        return True
+
     def update(self, dt, *args):
         self.shoot_timer -= dt
+        self.missile_timer = max(0.0, self.missile_timer - dt)
+        if self.cloak_active:
+            self.cloak_timer = max(0.0, self.cloak_timer - dt)
+            if self.cloak_timer <= 0.0:
+                self.disable_cloak()
 
         if self.shield_level > 0 and self.shield_layers < self.shield_level:
             self.shield_regen_timer += dt

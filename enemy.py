@@ -56,6 +56,10 @@ class Enemy(CircleShape):
             self.alerted = False
             return False
 
+        if getattr(player, "cloak_active", False):
+            self.alerted = False
+            return False
+
         distance = self.position.distance_to(player.position)
         lose_range = self.view_range * ENEMY_ALERT_LOSE_MULTIPLIER
 
@@ -113,7 +117,8 @@ class Enemy(CircleShape):
         nose = max(points, key=lambda p: forward.dot(p - center))
         rear = min(points, key=lambda p: forward.dot(p - center))
 
-        base = pygame.Color(self.COLOR)
+        base_color = getattr(self, "color_override", self.COLOR)
+        base = pygame.Color(base_color)
         fill = (
             max(25, int(base.r * 0.48)),
             max(25, int(base.g * 0.48)),
@@ -191,6 +196,63 @@ class Enemy(CircleShape):
             2 + int(2 * engine_pulse),
         )
 
+        faction_key = getattr(self, "faction_key", "")
+        if faction_key:
+            badge_center = center + right * (self.radius * 0.72) - forward * (self.radius * 0.15)
+            badge_color = {
+                "player": (147, 197, 253),
+                "crimson": (252, 165, 165),
+                "jade": (110, 231, 183),
+                "gold": (253, 230, 138),
+            }.get(faction_key, (203, 213, 225))
+
+            pygame.draw.circle(screen, (9, 16, 29), (int(badge_center.x), int(badge_center.y)), 6)
+            pygame.draw.circle(screen, badge_color, (int(badge_center.x), int(badge_center.y)), 5, 1)
+
+            if faction_key == "crimson":
+                pygame.draw.line(
+                    screen,
+                    badge_color,
+                    (int(badge_center.x - 2), int(badge_center.y + 2)),
+                    (int(badge_center.x), int(badge_center.y - 2)),
+                    2,
+                )
+                pygame.draw.line(
+                    screen,
+                    badge_color,
+                    (int(badge_center.x), int(badge_center.y - 2)),
+                    (int(badge_center.x + 2), int(badge_center.y + 2)),
+                    2,
+                )
+            elif faction_key == "jade":
+                pygame.draw.polygon(
+                    screen,
+                    badge_color,
+                    [
+                        (int(badge_center.x), int(badge_center.y - 2)),
+                        (int(badge_center.x + 2), int(badge_center.y)),
+                        (int(badge_center.x), int(badge_center.y + 2)),
+                        (int(badge_center.x - 2), int(badge_center.y)),
+                    ],
+                )
+            elif faction_key == "gold":
+                pygame.draw.circle(screen, badge_color, (int(badge_center.x), int(badge_center.y)), 2)
+            elif faction_key == "player":
+                pygame.draw.line(
+                    screen,
+                    badge_color,
+                    (int(badge_center.x), int(badge_center.y - 2)),
+                    (int(badge_center.x), int(badge_center.y + 2)),
+                    1,
+                )
+                pygame.draw.line(
+                    screen,
+                    badge_color,
+                    (int(badge_center.x - 2), int(badge_center.y)),
+                    (int(badge_center.x + 2), int(badge_center.y)),
+                    1,
+                )
+
     def take_damage(self, amount=1):
         self.health -= amount
         log_event("enemy_hit", health=self.health)
@@ -218,8 +280,28 @@ class Enemy(CircleShape):
     def update(self, dt, player=None):
         # Default: do nothing
         self.shoot_timer = max(0, self.shoot_timer - dt)
+        forced_target_timer = float(getattr(self, "forced_target_timer", 0.0) or 0.0)
+        if forced_target_timer > 0.0:
+            self.forced_target_timer = max(0.0, forced_target_timer - dt)
+
+        entry_timer = float(getattr(self, "entry_timer", 0.0) or 0.0)
+        if entry_timer > 0.0 and hasattr(self, "entry_target"):
+            target = pygame.Vector2(self.entry_target)
+            delta = target - self.position
+            if delta.length_squared() > 1e-6:
+                direction = delta.normalize()
+                self.velocity = direction * self.scaled_speed(0.95)
+                angle = math.degrees(math.atan2(direction.y, direction.x)) - 90
+                self.rotation = angle
+            self.entry_timer = max(0.0, entry_timer - dt)
+
         self.position += self.velocity * dt
-        self.wrap_around_screen()
+        # Optional spawn-entry timer lets enemies fly in from off-screen first.
+        no_wrap_timer = float(getattr(self, "no_wrap_timer", 0.0) or 0.0)
+        if no_wrap_timer > 0.0:
+            self.no_wrap_timer = max(0.0, no_wrap_timer - dt)
+        else:
+            self.wrap_around_screen()
 
     def behavior(self, dt, player):
         # override in subclasses
@@ -244,7 +326,11 @@ class SuicideBomber(Enemy):
 
     def behavior(self, dt, player):
         # Charge directly at the player
-        if not self.can_see_player(player):
+        if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
+            return
+
+        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.26)
             return
 
@@ -279,7 +365,11 @@ class Harasser(Enemy):
         )
 
     def behavior(self, dt, player):
-        if not self.can_see_player(player):
+        if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
+            return
+
+        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.3)
             return
 
@@ -291,13 +381,16 @@ class Harasser(Enemy):
             self.velocity = pygame.Vector2(0, 0)
             return
 
-        # Keep distance: move away if too close, approach if too far
+        # Keep distance: evade if too close, approach if too far, strafe when in band.
         if distance < desired_range * 0.6:
             self.velocity = (-displacement).normalize() * self.scaled_speed(0.8)
         elif distance > desired_range:
             self.velocity = displacement.normalize() * self.scaled_speed(0.8)
         else:
-            self.velocity = pygame.Vector2(0, 0)
+            toward = displacement.normalize()
+            strafe = pygame.Vector2(-toward.y, toward.x)
+            strafe_sign = 1.0 if (int(pygame.time.get_ticks() / 900) % 2 == 0) else -1.0
+            self.velocity = (strafe * strafe_sign + toward * 0.18) * self.scaled_speed(0.72)
 
         self.aim_at(player.position)
 
@@ -327,7 +420,11 @@ class Tank(Enemy):
         )
 
     def behavior(self, dt, player):
-        if not self.can_see_player(player):
+        if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
+            return
+
+        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.22)
             return
 
@@ -343,7 +440,9 @@ class Tank(Enemy):
         if distance > close_range:
             self.velocity = displacement.normalize() * self.scaled_speed(0.6)
         else:
-            self.velocity *= 0.9
+            toward = displacement.normalize()
+            strafe = pygame.Vector2(-toward.y, toward.x)
+            self.velocity = (strafe * 0.38 + toward * 0.12) * self.scaled_speed(0.5)
 
         self.aim_at(player.position)
 

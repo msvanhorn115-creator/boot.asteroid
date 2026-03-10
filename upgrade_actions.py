@@ -71,4 +71,54 @@ def apply_upgrade(player, upgrade_key):
         }
         return success, message, event_data
 
+    if upgrade_key == "missile":
+        success, message = player.buy_missile_upgrade()
+        event_data = {
+            "upgrade": "missile",
+            "level": player.missile_level,
+            "cooldown": round(player.missile_cooldown_seconds(), 2),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "cloak":
+        success, message = player.buy_cloak_upgrade()
+        event_data = {
+            "upgrade": "cloak",
+            "level": player.cloak_level,
+            "capacity": round(player.get_cloak_capacity_seconds(), 2),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "cargo_hold":
+        success, message = player.buy_cargo_hold_upgrade()
+        event_data = {
+            "upgrade": "cargo_hold",
+            "level": player.cargo_hold_level,
+            "capacity": player.get_cargo_capacity_units(),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "accommodations":
+        success, message = player.buy_accommodations_upgrade()
+        event_data = {
+            "upgrade": "accommodations",
+            "level": player.accommodations_level,
+            "capacity": player.get_accommodations_capacity(),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "engine_tuning":
+        success, message = player.buy_engine_tuning_upgrade()
+        event_data = {
+            "upgrade": "engine_tuning",
+            "level": player.engine_tuning_level,
+            "speed_mult": round(player.get_engine_speed_multiplier(), 2),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
     raise ValueError(f"Unknown upgrade key: {upgrade_key}")

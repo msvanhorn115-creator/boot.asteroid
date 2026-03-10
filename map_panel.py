@@ -214,6 +214,18 @@ def map_sector_at_point(panel_rect, active_sector, point):
     return None
 
 
+def map_tile_parity_ok(panel_rect, active_sector):
+    """Return True only when each map tile center resolves to its exact sector."""
+    layout = _compute_map_layout(panel_rect)
+    cells = get_map_cells(panel_rect, active_sector, layout)
+    for cell in cells:
+        center = cell["rect"].center
+        resolved = map_sector_at_point(panel_rect, active_sector, center)
+        if resolved != cell["sector"]:
+            return False
+    return True
+
+
 def draw_map_panel(
     screen,
     panel_rect,
@@ -226,6 +238,10 @@ def draw_map_panel(
     title_font,
     panel_font,
     hud_font,
+    sector_owner_fn=None,
+    owner_label_fn=None,
+    build_status_fn=None,
+    raided_sectors=None,
 ):
     overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
     overlay.fill((2, 6, 14, 214))
@@ -265,11 +281,30 @@ def draw_map_panel(
         content_rect = cell["content_rect"]
         snapshot = explored_sectors.get(sector)
         intel = live_sector_intel.get(sector)
+        owner_key = sector_owner_fn(sector) if sector_owner_fn is not None else "unknown"
+
+        owner_tint = {
+            "player": (96, 165, 250, 34),
+            "crimson": (239, 68, 68, 30),
+            "jade": (16, 185, 129, 30),
+            "gold": (245, 158, 11, 30),
+            "null": (148, 163, 184, 18),
+        }.get(owner_key, (148, 163, 184, 20))
+        owner_border = {
+            "player": (147, 197, 253),
+            "crimson": (252, 165, 165),
+            "jade": (110, 231, 183),
+            "gold": (253, 230, 138),
+            "null": (203, 213, 225),
+        }.get(owner_key, (203, 213, 225))
 
         _draw_sector_thumbnail(screen, content_rect, sector, snapshot, intel)
+        tint = pygame.Surface((content_rect.width, content_rect.height), pygame.SRCALPHA)
+        tint.fill(owner_tint)
+        screen.blit(tint, content_rect.topleft)
 
         # Hard tile border so sectors are visually discrete even with dense thumbnails.
-        pygame.draw.rect(screen, (192, 205, 226), rect, 1)
+        pygame.draw.rect(screen, owner_border, rect, 1)
 
         if cell["in_scan_range"]:
             pygame.draw.rect(screen, (79, 141, 226), rect, 1)
@@ -294,6 +329,9 @@ def draw_map_panel(
             ship_count = hud_font.render(str(ships), True, (248, 189, 189))
             screen.blit(ship_count, (rect.right - ship_count.get_width() - 3, rect.y + 3))
 
+        if raided_sectors is not None and sector in raided_sectors:
+            pygame.draw.rect(screen, (251, 113, 133), rect, 2)
+
     info_x = layout["info_x"]
     info_y = layout["info_y"]
     scanner_text = panel_font.render(f"Scanner L{scanner_level}", True, UI_COLORS["accent_alt"])
@@ -315,6 +353,20 @@ def draw_map_panel(
     legend2 = hud_font.render("Scanned: exact asteroids + seed-stable enemy contacts", True, UI_COLORS["muted"])
     screen.blit(legend1, (info_x, info_y + 96))
     screen.blit(legend2, (info_x, info_y + 118))
+    owner_legend = "Owner tint: Union/Crimson/Jade/Gold/Null"
+    screen.blit(hud_font.render(owner_legend, True, UI_COLORS["muted"]), (info_x, info_y + 140))
+
+    if owner_label_fn is not None:
+        current_owner = owner_label_fn(sector_owner_fn(active_sector))
+        owner_line = hud_font.render(f"Current Owner: {current_owner}", True, "#bfdbfe")
+        screen.blit(owner_line, (info_x, info_y + 162))
+
+    if build_status_fn is not None:
+        hovered = map_sector_at_point(panel_rect, active_sector, pygame.mouse.get_pos())
+        target_sector = hovered if hovered is not None else active_sector
+        status_text, status_color = build_status_fn(target_sector)
+        status_surface = hud_font.render(status_text, True, status_color)
+        screen.blit(status_surface, (info_x, info_y + 182))
 
     if active_contract:
         target = active_contract["target_sector"]
@@ -348,12 +400,12 @@ def draw_map_panel(
         line4 = hud_font.render(f"Distance: {tile_distance} tiles | Risk: R{risk_rating}/5", True, "#fda4af")
         line5 = hud_font.render(f"Hazard Pay: +{hazard_bonus} gold", True, "#fdba74")
         line6 = hud_font.render(f"Offset: {dx:+d}, {dy:+d}", True, "#94a3b8")
-        screen.blit(line1, (info_x, info_y + 150))
-        screen.blit(line2, (info_x, info_y + 174))
-        screen.blit(line3, (info_x, info_y + 196))
-        screen.blit(line4, (info_x, info_y + 218))
-        screen.blit(line5, (info_x, info_y + 240))
-        screen.blit(line6, (info_x, info_y + 262))
+        screen.blit(line1, (info_x, info_y + 190))
+        screen.blit(line2, (info_x, info_y + 214))
+        screen.blit(line3, (info_x, info_y + 236))
+        screen.blit(line4, (info_x, info_y + 258))
+        screen.blit(line5, (info_x, info_y + 280))
+        screen.blit(line6, (info_x, info_y + 302))
     else:
         no_contract = hud_font.render("No active contract", True, "#94a3b8")
-        screen.blit(no_contract, (info_x, info_y + 150))
+        screen.blit(no_contract, (info_x, info_y + 190))

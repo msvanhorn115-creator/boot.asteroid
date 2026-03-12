@@ -207,7 +207,7 @@ class SectorManager:
                 px = origin_x + rng.uniform(margin_x, self.sector_width - margin_x)
                 py = origin_y + rng.uniform(margin_y, self.sector_height - margin_y)
 
-            accepted_metal = choose_metal_type(rng)
+            accepted_metal = choose_metal_type(rng, allow_gold=False)
             color = get_metal_color(accepted_metal)
             planet_id = f"p:{sector_x}:{sector_y}:{index}"
             planets.append((planet_id, px, py, accepted_metal, color))

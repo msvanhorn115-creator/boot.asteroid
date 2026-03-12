@@ -49,11 +49,15 @@ def get_metal_prices():
     return {metal: data["price"] for metal, data in METAL_ECONOMY.items()}
 
 
-def choose_metal_type(rng=None):
+def choose_metal_type(rng=None, allow_gold=True):
     if rng is None:
         rng = random
 
     metals = list(METAL_ECONOMY.keys())
+    if not allow_gold:
+        metals = [m for m in metals if m != "gold"]
+    if not metals:
+        metals = ["iron"]
     weights = [METAL_ECONOMY[m]["weight"] for m in metals]
     return rng.choices(metals, weights=weights, k=1)[0]
 

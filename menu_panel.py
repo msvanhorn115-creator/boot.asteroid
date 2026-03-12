@@ -1,7 +1,7 @@
 import pygame
 
 from constants import SCREEN_HEIGHT, SCREEN_WIDTH
-from ui_theme import UI_COLORS, draw_button, draw_panel, draw_tag
+from ui_theme import UI_COLORS, draw_button, draw_close_button, draw_panel, draw_tag
 
 
 def draw_menu_panel(
@@ -31,12 +31,14 @@ def draw_menu_panel(
 
     menu_panel = pygame.Rect(SCREEN_WIDTH // 2 - 350, SCREEN_HEIGHT // 2 - 280, 700, 560)
     draw_panel(screen, menu_panel, border_color=UI_COLORS["panel_border_hot"])
+    menu_ui["close"] = pygame.Rect(menu_panel.right - 54, menu_panel.y + 16, 34, 34)
+    draw_close_button(screen, menu_ui["close"])
 
     accent_bar = pygame.Rect(menu_panel.x + 20, menu_panel.y + 20, menu_panel.width - 40, 6)
     pygame.draw.rect(screen, UI_COLORS["accent_alt"], accent_bar, border_radius=3)
 
     title_text = "Paused" if game_state == "paused" else "Asteroid Miner"
-    subtitle_text = "Esc again quits" if game_state == "paused" else "Select difficulty and start"
+    subtitle_text = "Esc resumes" if game_state == "paused" else "Select difficulty and start"
 
     title_surface = title_font.render(title_text, True, UI_COLORS["text"])
     screen.blit(title_surface, (menu_panel.centerx - title_surface.get_width() // 2, menu_panel.y + 40))
@@ -74,6 +76,10 @@ def draw_menu_panel(
         f"Asteroids {preview['asteroid_speed']:.2f}x speed | spawn {preview['asteroid_spawn']:.2f}s",
         f"Enemies {preview['enemy_speed']:.2f}x speed, HP {preview['enemy_health']:.2f}x",
         f"Metal value {preview['sell_multiplier']:.2f}x | drops {preview['drop_rate']:.2f}x",
+        (
+            f"AI agg {preview.get('ai_aggression', 1.0):.2f} | acc {preview.get('ai_accuracy', 1.0):.2f} | "
+            f"fire {preview.get('ai_fire_intent', 1.0):.2f}"
+        ),
     ]
     for idx, line in enumerate(summary_lines):
         text = hud_font.render(line, True, UI_COLORS["muted"])
@@ -93,37 +99,75 @@ def draw_menu_panel(
 
     map_label = "Hide Map" if show_map_overlay else "Map"
     draw_button(screen, menu_ui["map"], map_label, hud_font, active=show_map_overlay, tone="alt")
+    draw_button(screen, menu_ui["ship"], "Ship", hud_font, active=False, tone="alt")
+    draw_button(screen, menu_ui["build"], "Build", hud_font, active=False, tone="alt")
 
     if has_active_game and game_state == "menu":
         hint = hud_font.render("You already have a run in memory.", True, UI_COLORS["muted"])
         screen.blit(hint, (menu_panel.x + 182, menu_panel.y + 306))
 
     if show_controls_overlay:
-        controls_panel = pygame.Rect(menu_panel.x - 300, menu_panel.y + 28, 270, 400)
+        controls_panel = pygame.Rect(menu_panel.x - 320, menu_panel.y + 20, 290, 520)
         draw_panel(screen, controls_panel, border_color=UI_COLORS["accent_alt"], fill_key="panel_soft")
         controls_title = panel_font.render("Controls", True, UI_COLORS["accent_alt"])
-        screen.blit(controls_title, (controls_panel.x + 62, controls_panel.y + 16))
+        screen.blit(controls_title, (controls_panel.x + 84, controls_panel.y + 14))
 
-        controls_lines = [
-            "Left/Right: Rotate",
-            "Up/Down: Thrust / Reverse",
-            "W: Sublight boost",
-            "Space: Shoot",
-            "F: Fire missile",
-            "C: Claim nearby site",
-            "B: Build station/defense",
-            "I: Ship systems panel",
-            "M: Sector map",
-            "V: Toggle cloak",
-            "E: Station dock / Planet trade",
-            "T: Targeting computer",
-            "D: Dev god mode",
-            "Mouse: Station buttons",
-            "Esc: Pause (Esc again from pause quits)",
+        grouped_controls = [
+            (
+                "Flight",
+                [
+                    "Left/Right: Rotate",
+                    "Up/Down: Thrust / Reverse",
+                    "W: Sublight boost",
+                    "V: Toggle cloak",
+                ],
+            ),
+            (
+                "Combat",
+                [
+                    "Space: Shoot",
+                    "F: Fire missile",
+                    "T: Targeting computer",
+                    "C: Claim nearby site",
+                ],
+            ),
+            (
+                "Menus and Tabs",
+                [
+                    "Esc: Pause / Resume",
+                    "M: Map tab",
+                    "I: Ship tab",
+                    "B: Build tab",
+                    "E: Station dock / Planet trade",
+                ],
+            ),
+            (
+                "Touch and Parity",
+                [
+                    "Touch FIRE/MAP/PAUSE mirror Space/M/Esc",
+                    "Touch D-pad mirrors arrow keys",
+                    "Mouse/touch can activate station and planet buttons",
+                    "Keyboard, mouse, and touch all use same gameplay actions",
+                ],
+            ),
+            (
+                "Dev",
+                [
+                    "D: Dev god mode",
+                ],
+            ),
         ]
-        for idx, line in enumerate(controls_lines):
-            line_surface = hud_font.render(line, True, UI_COLORS["muted"])
-            screen.blit(line_surface, (controls_panel.x + 14, controls_panel.y + 74 + idx * 24))
+
+        y = controls_panel.y + 52
+        for section_title, lines in grouped_controls:
+            header_surface = hud_font.render(section_title, True, UI_COLORS["accent"])
+            screen.blit(header_surface, (controls_panel.x + 12, y))
+            y += 22
+            for line in lines:
+                line_surface = hud_font.render(line, True, UI_COLORS["muted"])
+                screen.blit(line_surface, (controls_panel.x + 20, y))
+                y += 20
+            y += 8
 
     if show_audio_overlay:
         audio_panel = pygame.Rect(menu_panel.right + 16, menu_panel.y + 56, 280, 230)

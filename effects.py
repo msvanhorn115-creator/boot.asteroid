@@ -2,39 +2,36 @@ import random
 
 import pygame
 
-from constants import SCREEN_HEIGHT
+from constants import SCREEN_HEIGHT, SCREEN_WIDTH
 from resources import get_metal_color
 
 
-def spawn_metal_pickup_fx(metal_pickup_fx, start_pos, mined_metals):
-    target = pygame.Vector2(120, SCREEN_HEIGHT - 26)
-    for metal_type, amount in mined_metals.items():
-        color = get_metal_color(metal_type)
-        for _ in range(amount):
-            jitter = pygame.Vector2(random.uniform(-12, 12), random.uniform(-12, 12))
-            start = pygame.Vector2(start_pos) + jitter
-            midpoint = (start + target) * 0.5
-            control = midpoint + pygame.Vector2(
-                random.uniform(-70, 70),
-                -random.uniform(110, 210),
+def _spawn_pickup_fx(store, start_pos, color, count, target, radius_min, radius_max):
+    for _ in range(max(0, int(count))):
+        jitter = pygame.Vector2(random.uniform(-12, 12), random.uniform(-12, 12))
+        start = pygame.Vector2(start_pos) + jitter
+        midpoint = (start + target) * 0.5
+        control = midpoint + pygame.Vector2(
+            random.uniform(-70, 70),
+            -random.uniform(110, 210),
+        )
+        for _particle in range(2):
+            store.append(
+                {
+                    "start": start,
+                    "control": control,
+                    "end": target,
+                    "color": color,
+                    "t": 0.0,
+                    "duration": random.uniform(0.55, 0.9),
+                    "radius": random.randint(radius_min, radius_max),
+                    "trail": [],
+                }
             )
-            for _particle in range(2):
-                metal_pickup_fx.append(
-                    {
-                        "start": start,
-                        "control": control,
-                        "end": target,
-                        "color": color,
-                        "t": 0.0,
-                        "duration": random.uniform(0.55, 0.9),
-                        "radius": random.randint(7, 11),
-                        "trail": [],
-                    }
-                )
 
 
-def step_and_draw_metal_pickup_fx(screen, metal_pickup_fx, dt):
-    for fx in list(metal_pickup_fx):
+def _step_and_draw_pickup_fx(screen, pickup_fx, dt):
+    for fx in list(pickup_fx):
         fx["t"] += dt / fx["duration"]
         t = min(1.0, fx["t"])
         one_minus_t = 1.0 - t
@@ -74,31 +71,63 @@ def step_and_draw_metal_pickup_fx(screen, metal_pickup_fx, dt):
         pygame.draw.circle(screen, fx["color"], (int(pos.x), int(pos.y)), draw_radius)
 
         if t >= 1.0:
-            metal_pickup_fx.remove(fx)
+            pickup_fx.remove(fx)
 
 
-def spawn_ship_explosion_fx(ship_explosion_fx, center, radius, base_color, burst_scale=1.0):
+def spawn_metal_pickup_fx(metal_pickup_fx, start_pos, mined_metals):
+    target = pygame.Vector2(120, SCREEN_HEIGHT - 26)
+    for metal_type, amount in mined_metals.items():
+        color = get_metal_color(metal_type)
+        _spawn_pickup_fx(metal_pickup_fx, start_pos, color, amount, target, 7, 11)
+
+
+def spawn_credit_pickup_fx(credit_pickup_fx, start_pos, amount):
+    target = pygame.Vector2(SCREEN_WIDTH - 104, SCREEN_HEIGHT - 26)
+    orb_count = min(8, max(1, int(round(max(1, amount) / 6))))
+    _spawn_pickup_fx(credit_pickup_fx, start_pos, (245, 215, 90), orb_count, target, 6, 10)
+
+
+def step_and_draw_metal_pickup_fx(screen, metal_pickup_fx, dt):
+    _step_and_draw_pickup_fx(screen, metal_pickup_fx, dt)
+
+
+def step_and_draw_credit_pickup_fx(screen, credit_pickup_fx, dt):
+    _step_and_draw_pickup_fx(screen, credit_pickup_fx, dt)
+
+
+def spawn_ship_explosion_fx(
+    ship_explosion_fx,
+    center,
+    radius,
+    base_color,
+    burst_scale=1.0,
+    fragments=True,
+    fragment_life_scale=1.0,
+    spark_life_scale=1.0,
+):
     color = pygame.Color(base_color)
     center_vec = pygame.Vector2(center)
 
-    fragment_count = max(4, int(6 * burst_scale))
-    for _ in range(fragment_count):
-        angle = random.uniform(0, 360)
-        speed = random.uniform(110, 280) * burst_scale
-        velocity = pygame.Vector2(1, 0).rotate(angle) * speed
-        ship_explosion_fx.append(
-            {
-                "kind": "fragment",
-                "pos": center_vec.copy(),
-                "vel": velocity,
-                "life": random.uniform(0.35, 0.72),
-                "max_life": random.uniform(0.35, 0.72),
-                "size": random.uniform(radius * 0.25, radius * 0.55),
-                "rotation": random.uniform(0, 360),
-                "spin": random.uniform(-500, 500),
-                "color": color,
-            }
-        )
+    if fragments:
+        fragment_count = max(4, int(6 * burst_scale))
+        for _ in range(fragment_count):
+            angle = random.uniform(0, 360)
+            speed = random.uniform(110, 280) * burst_scale
+            velocity = pygame.Vector2(1, 0).rotate(angle) * speed
+            life = random.uniform(0.35, 0.72) * fragment_life_scale
+            ship_explosion_fx.append(
+                {
+                    "kind": "fragment",
+                    "pos": center_vec.copy(),
+                    "vel": velocity,
+                    "life": life,
+                    "max_life": life,
+                    "size": random.uniform(radius * 0.25, radius * 0.55),
+                    "rotation": random.uniform(0, 360),
+                    "spin": random.uniform(-500, 500),
+                    "color": color,
+                }
+            )
 
     spark_count = max(10, int(18 * burst_scale))
     for _ in range(spark_count):
@@ -110,13 +139,14 @@ def spawn_ship_explosion_fx(ship_explosion_fx, center, radius, base_color, burst
             min(255, color.g + random.randint(20, 65)),
             min(255, color.b + random.randint(20, 65)),
         )
+        life = random.uniform(0.2, 0.5) * spark_life_scale
         ship_explosion_fx.append(
             {
                 "kind": "spark",
                 "pos": center_vec.copy(),
                 "vel": velocity,
-                "life": random.uniform(0.2, 0.5),
-                "max_life": random.uniform(0.2, 0.5),
+                "life": life,
+                "max_life": life,
                 "size": random.uniform(2.0, 4.0),
                 "rotation": 0.0,
                 "spin": 0.0,

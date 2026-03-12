@@ -83,6 +83,35 @@ class Player(CircleShape):
         self.cargo_hold_level = 0
         self.accommodations_level = 0
         self.engine_tuning_level = 0
+        self.virtual_controls = {
+            "left": False,
+            "right": False,
+            "up": False,
+            "down": False,
+            "warp": False,
+            "fire": False,
+        }
+
+    def set_virtual_controls(
+        self,
+        *,
+        left=False,
+        right=False,
+        up=False,
+        down=False,
+        warp=False,
+        fire=False,
+    ):
+        self.virtual_controls["left"] = bool(left)
+        self.virtual_controls["right"] = bool(right)
+        self.virtual_controls["up"] = bool(up)
+        self.virtual_controls["down"] = bool(down)
+        self.virtual_controls["warp"] = bool(warp)
+        self.virtual_controls["fire"] = bool(fire)
+
+    def clear_virtual_controls(self):
+        for key in self.virtual_controls:
+            self.virtual_controls[key] = False
 
     def configure_difficulty(
         self,
@@ -596,6 +625,56 @@ class Player(CircleShape):
                 2 + int(2 * thrust_pulse),
             )
 
+        if self.shield_level > 0:
+            shield_ratio = 0.0
+            shield_ratio = self.shield_layers / float(self.shield_level)
+            pulse = 0.55 + 0.45 * math.sin(pygame.time.get_ticks() * 0.008)
+            alpha_scale = 0.35 + 0.65 * max(0.15, shield_ratio)
+            shield_color = (
+                min(255, int(72 + 90 * pulse)),
+                min(255, int(180 + 45 * pulse)),
+                255,
+            )
+
+            base_radius = self.radius + 7
+            ring_gap = 4
+            for layer_index in range(self.shield_level):
+                ring_radius = int(base_radius + layer_index * ring_gap)
+                ring_active = layer_index < self.shield_layers
+                ring_pulse = 0.72 + 0.28 * math.sin((pygame.time.get_ticks() * 0.008) + layer_index * 0.55)
+                if ring_active:
+                    ring_color = (
+                        min(255, int(shield_color[0] * ring_pulse)),
+                        min(255, int(shield_color[1] * ring_pulse)),
+                        shield_color[2],
+                    )
+                    ring_width = 2 if layer_index < self.shield_layers - 1 else 3
+                else:
+                    ring_color = (42, 84, 122)
+                    ring_width = 1
+                pygame.draw.circle(
+                    screen,
+                    ring_color,
+                    (int(center.x), int(center.y)),
+                    ring_radius,
+                    ring_width,
+                )
+
+            shield_radius = int(base_radius + max(0, self.shield_level - 1) * ring_gap)
+
+            if self.shield_layers > 0:
+                orbit_radius = shield_radius + 6
+                pip_count = self.shield_layers
+                for index in range(pip_count):
+                    angle = (pygame.time.get_ticks() * 0.08) + (360.0 / pip_count) * index
+                    pip_pos = center + pygame.Vector2(orbit_radius, 0).rotate(angle)
+                    pip_color = (
+                        int(shield_color[0] * alpha_scale),
+                        int(shield_color[1] * alpha_scale),
+                        shield_color[2],
+                    )
+                    pygame.draw.circle(screen, pip_color, (int(pip_pos.x), int(pip_pos.y)), 3)
+
     def rotate(self, dt):
         self.rotation += PLAYER_TURN_SPEED * dt
 
@@ -652,10 +731,19 @@ class Player(CircleShape):
                     break
 
         keys = pygame.key.get_pressed()
+        left_pressed = keys[pygame.K_LEFT] or self.virtual_controls["left"]
+        right_pressed = keys[pygame.K_RIGHT] or self.virtual_controls["right"]
+        up_pressed = keys[pygame.K_UP] or self.virtual_controls["up"]
+        down_pressed = keys[pygame.K_DOWN] or self.virtual_controls["down"]
+        warp_pressed = keys[pygame.K_w] or self.virtual_controls["warp"]
+        fire_pressed = keys[pygame.K_SPACE] or self.virtual_controls["fire"]
+
+        touch_turn_scale = 1.45 if (self.virtual_controls["left"] or self.virtual_controls["right"]) else 1.0
+        touch_thrust_scale = 1.3 if (self.virtual_controls["up"] or self.virtual_controls["down"]) else 1.0
 
         if self.warp_drive_level > 0:
             warp_capacity = self.get_warp_capacity_seconds()
-            if keys[pygame.K_w] and self.warp_energy > 0.0:
+            if warp_pressed and self.warp_energy > 0.0:
                 self.warp_boosting = True
                 self.warp_energy = max(0.0, self.warp_energy - dt)
             else:
@@ -665,17 +753,17 @@ class Player(CircleShape):
             self.warp_boosting = False
             self.warp_energy = 0.0
 
-        if keys[pygame.K_LEFT]:
-            self.rotate(-dt)
-        if keys[pygame.K_RIGHT]:
-            self.rotate(dt)
+        if left_pressed:
+            self.rotate(-dt * touch_turn_scale)
+        if right_pressed:
+            self.rotate(dt * touch_turn_scale)
         if self.warp_boosting:
             self.move(dt * self.get_warp_speed_multiplier())
-        elif keys[pygame.K_UP]:
-            self.move(dt)
-        if keys[pygame.K_DOWN]:
-            self.move(-dt)
-        if keys[pygame.K_SPACE]:
+        elif up_pressed:
+            self.move(dt * touch_thrust_scale)
+        if down_pressed:
+            self.move(-dt * touch_thrust_scale)
+        if fire_pressed:
             self.shoot()
 
         self.wrap_around_screen()

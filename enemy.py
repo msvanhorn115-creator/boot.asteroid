@@ -37,6 +37,11 @@ class Enemy(CircleShape):
         health_multiplier=1.0,
         view_multiplier=1.0,
         shoot_cooldown_multiplier=1.0,
+        ai_aggression=1.0,
+        ai_accuracy=1.0,
+        ai_strafe=1.0,
+        ai_fire_intent=1.0,
+        ai_memory=1.0,
     ):
         super().__init__(x, y, radius)
         self.rotation = 0
@@ -47,6 +52,11 @@ class Enemy(CircleShape):
         self.idle_timer = random.uniform(0.4, 1.6)
         self.speed_multiplier = max(0.2, float(speed_multiplier))
         self.shoot_cooldown_multiplier = max(0.2, float(shoot_cooldown_multiplier))
+        self.ai_aggression = max(0.4, min(1.8, float(ai_aggression)))
+        self.ai_accuracy = max(0.4, min(1.8, float(ai_accuracy)))
+        self.ai_strafe = max(0.4, min(1.8, float(ai_strafe)))
+        self.ai_fire_intent = max(0.3, min(2.0, float(ai_fire_intent)))
+        self.ai_memory = max(0.6, min(1.7, float(ai_memory)))
 
     def scaled_speed(self, base_scale):
         return ENEMY_SPEED * self.speed_multiplier * base_scale
@@ -61,7 +71,7 @@ class Enemy(CircleShape):
             return False
 
         distance = self.position.distance_to(player.position)
-        lose_range = self.view_range * ENEMY_ALERT_LOSE_MULTIPLIER
+        lose_range = self.view_range * ENEMY_ALERT_LOSE_MULTIPLIER * self.ai_memory
 
         if self.alerted:
             self.alerted = distance <= lose_range
@@ -269,6 +279,27 @@ class Enemy(CircleShape):
         angle = math.degrees(math.atan2(direction.y, direction.x)) - 90
         self.rotation = angle
 
+    def aim_at_target(self, target_pos, target_velocity=None):
+        target = pygame.Vector2(target_pos)
+        if target_velocity is not None:
+            lead_seconds = 0.06 + 0.09 * self.ai_accuracy
+            target += pygame.Vector2(target_velocity) * lead_seconds
+
+        delta = target - self.position
+        if delta.length_squared() == 0:
+            return
+
+        direction = delta.normalize()
+        angle = math.degrees(math.atan2(direction.y, direction.x)) - 90
+        jitter_degrees = max(0.0, 8.0 - self.ai_accuracy * 4.0)
+        if jitter_degrees > 0:
+            angle += random.uniform(-jitter_degrees, jitter_degrees)
+        self.rotation = angle
+
+    def should_fire(self, dt):
+        trigger_prob = min(1.0, dt * (2.2 * self.ai_fire_intent))
+        return random.random() < trigger_prob
+
     def shoot(self):
         if self.shoot_timer > 0:
             return
@@ -340,8 +371,9 @@ class SuicideBomber(Enemy):
             return
 
         direction = delta.normalize()
-        self.velocity = direction * self.scaled_speed(1.1)
-        self.aim_at(player.position)
+        speed_scale = 0.9 + 0.22 * self.ai_aggression
+        self.velocity = direction * self.scaled_speed(speed_scale)
+        self.aim_at_target(player.position, getattr(player, "velocity", None))
 
     def update(self, dt, player=None):
         super().update(dt, player)
@@ -375,7 +407,7 @@ class Harasser(Enemy):
 
         displacement = player.position - self.position
         distance = displacement.length()
-        desired_range = self.view_range * 0.8
+        desired_range = self.view_range * max(0.55, 0.9 - 0.14 * (self.ai_aggression - 1.0))
 
         if distance == 0:
             self.velocity = pygame.Vector2(0, 0)
@@ -383,19 +415,20 @@ class Harasser(Enemy):
 
         # Keep distance: evade if too close, approach if too far, strafe when in band.
         if distance < desired_range * 0.6:
-            self.velocity = (-displacement).normalize() * self.scaled_speed(0.8)
+            self.velocity = (-displacement).normalize() * self.scaled_speed(0.68 + 0.18 * self.ai_aggression)
         elif distance > desired_range:
-            self.velocity = displacement.normalize() * self.scaled_speed(0.8)
+            self.velocity = displacement.normalize() * self.scaled_speed(0.65 + 0.2 * self.ai_aggression)
         else:
             toward = displacement.normalize()
             strafe = pygame.Vector2(-toward.y, toward.x)
             strafe_sign = 1.0 if (int(pygame.time.get_ticks() / 900) % 2 == 0) else -1.0
-            self.velocity = (strafe * strafe_sign + toward * 0.18) * self.scaled_speed(0.72)
+            strafe_push = 0.85 * self.ai_strafe
+            self.velocity = (strafe * strafe_sign * strafe_push + toward * 0.16) * self.scaled_speed(0.62 + 0.16 * self.ai_aggression)
 
-        self.aim_at(player.position)
+        self.aim_at_target(player.position, getattr(player, "velocity", None))
 
         # Fire at the player when in range
-        if distance < self.view_range:
+        if distance < self.view_range * (0.84 + 0.14 * self.ai_accuracy) and self.should_fire(dt):
             self.shoot()
 
     def update(self, dt, player=None):
@@ -430,7 +463,7 @@ class Tank(Enemy):
 
         displacement = player.position - self.position
         distance = displacement.length()
-        close_range = 180
+        close_range = 180 * (0.9 + 0.24 * self.ai_aggression)
 
         if distance == 0:
             self.velocity = pygame.Vector2(0, 0)
@@ -438,16 +471,16 @@ class Tank(Enemy):
 
         # Move toward player if too far, slow down when close
         if distance > close_range:
-            self.velocity = displacement.normalize() * self.scaled_speed(0.6)
+            self.velocity = displacement.normalize() * self.scaled_speed(0.52 + 0.12 * self.ai_aggression)
         else:
             toward = displacement.normalize()
             strafe = pygame.Vector2(-toward.y, toward.x)
-            self.velocity = (strafe * 0.38 + toward * 0.12) * self.scaled_speed(0.5)
+            self.velocity = (strafe * (0.32 * self.ai_strafe) + toward * 0.12) * self.scaled_speed(0.44 + 0.1 * self.ai_aggression)
 
-        self.aim_at(player.position)
+        self.aim_at_target(player.position, getattr(player, "velocity", None))
 
         # Fire occasionally at close range
-        if distance < close_range:
+        if distance < close_range and self.should_fire(dt):
             self.shoot()
 
     def update(self, dt, player=None):

@@ -1,6 +1,6 @@
 import pygame
 
-from ui_theme import UI_COLORS, draw_panel, draw_tag
+from ui_theme import UI_COLORS, draw_close_button, draw_panel, draw_tag
 
 
 GRID_COLS = 9
@@ -64,6 +64,10 @@ def _thumbnail_key(rect, sector, snapshot, intel):
         )
         for p in (snapshot.get("planets", []) if snapshot else [])
     )
+    platforms = tuple(
+        (round(p.get("x", 0.0), 4), round(p.get("y", 0.0), 4))
+        for p in (snapshot.get("platforms", []) if snapshot else [])
+    )
     enemy_points = tuple(
         (round(p.get("x", 0.0), 4), round(p.get("y", 0.0), 4))
         for p in (intel.get("enemy_points", []) if intel is not None else [])
@@ -71,6 +75,15 @@ def _thumbnail_key(rect, sector, snapshot, intel):
     asteroid_points = tuple(
         (round(p.get("x", 0.0), 4), round(p.get("y", 0.0), 4), int(p.get("r", 20)))
         for p in (intel.get("asteroid_points", []) if intel is not None else [])
+    )
+    anomalies = tuple(
+        (
+            str(a.get("type", "")),
+            round(a.get("x", 0.0), 4),
+            round(a.get("y", 0.0), 4),
+            float(a.get("strength", 1.0)),
+        )
+        for a in (intel.get("anomalies", []) if intel is not None else [])
     )
     return (
         rect.width,
@@ -81,8 +94,10 @@ def _thumbnail_key(rect, sector, snapshot, intel):
         visited,
         stations,
         planets,
+        platforms,
         enemy_points,
         asteroid_points,
+        anomalies,
     )
 
 
@@ -120,6 +135,13 @@ def _render_sector_thumbnail(rect, sector, snapshot, intel):
             pygame.draw.rect(thumb, (244, 210, 125), station_rect)
             pygame.draw.rect(thumb, (250, 230, 180), station_rect, 1)
 
+        for platform in snapshot.get("platforms", []):
+            px = max(0, min(rect.width - 1, int(platform.get("x", 0.5) * rect.width)))
+            py = max(0, min(rect.height - 1, int(platform.get("y", 0.5) * rect.height)))
+            tri = ((px, py - 4), (px + 4, py + 3), (px - 4, py + 3))
+            pygame.draw.polygon(thumb, (250, 204, 21), tri)
+            pygame.draw.polygon(thumb, (253, 230, 138), tri, 1)
+
     # Tactical intel only appears when scanned/current intel exists.
     if intel is not None:
         for asteroid in intel.get("asteroid_points", []):
@@ -135,6 +157,20 @@ def _render_sector_thumbnail(rect, sector, snapshot, intel):
             p2 = (sx - 4, sy + 3)
             p3 = (sx + 4, sy + 3)
             pygame.draw.polygon(thumb, (248, 113, 113), (p1, p2, p3))
+
+        for anomaly in intel.get("anomalies", []):
+            ax = max(0, min(rect.width - 1, int(anomaly.get("x", 0.5) * rect.width)))
+            ay = max(0, min(rect.height - 1, int(anomaly.get("y", 0.5) * rect.height)))
+            anomaly_type = str(anomaly.get("type", ""))
+            if anomaly_type == "black_hole":
+                pygame.draw.circle(thumb, (148, 163, 184), (ax, ay), 5, 1)
+                pygame.draw.circle(thumb, (17, 24, 39), (ax, ay), 3)
+            elif anomaly_type == "radiation_star":
+                pygame.draw.circle(thumb, (253, 186, 116), (ax, ay), 3)
+                pygame.draw.circle(thumb, (251, 146, 60), (ax, ay), 5, 1)
+            else:
+                pygame.draw.circle(thumb, (103, 232, 249), (ax, ay), 4, 1)
+                pygame.draw.line(thumb, (103, 232, 249), (ax - 3, ay), (ax + 3, ay), 1)
 
     return thumb
 
@@ -157,22 +193,30 @@ def _truncate_to_width(text, font, max_width):
     return (trimmed + suffix) if trimmed else suffix
 
 
+def _blit_info_line(screen, panel_rect, x, y, text_surface):
+    bottom_limit = panel_rect.bottom - 20
+    if y + text_surface.get_height() > bottom_limit:
+        return y, False
+    screen.blit(text_surface, (x, y))
+    return y + text_surface.get_height() + 4, True
+
+
 def _mission_color(mission):
     mission_colors = {
-        "Freight": "#fca5a5",
-        "Charter": "#a5b4fc",
-        "Priority": "#fef08a",
-        "Survey": "#67e8f9",
-        "Courier": "#93c5fd",
-        "Medical": "#86efac",
-        "Relief": "#f9a8d4",
-        "Engineering": "#fdba74",
-        "Transport": "#c4b5fd",
-        "Diplomatic": "#fef08a",
-        "Evacuation": "#fca5a5",
-        "Science": "#67e8f9",
+        "Freight": "#d2646c",
+        "Charter": "#d0d0d8",
+        "Priority": "#e2e2ea",
+        "Survey": "#b8b8c6",
+        "Courier": "#ccccd8",
+        "Medical": "#c6c6d2",
+        "Relief": "#cf6b73",
+        "Engineering": "#c4c4d0",
+        "Transport": "#d6d6e0",
+        "Diplomatic": "#dcdce6",
+        "Evacuation": "#d15862",
+        "Science": "#bcbcc8",
     }
-    return mission_colors.get(mission, "#cbd5e1")
+    return mission_colors.get(mission, "#c8c8d2")
 
 
 def get_map_cells(panel_rect, active_sector, layout=None):
@@ -242,6 +286,8 @@ def draw_map_panel(
     owner_label_fn=None,
     build_status_fn=None,
     raided_sectors=None,
+    tactical_visible_sectors=None,
+    show_close_button=False,
 ):
     overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
     overlay.fill((2, 6, 14, 214))
@@ -251,6 +297,8 @@ def draw_map_panel(
 
     title = title_font.render("Sector Map", True, UI_COLORS["text"])
     screen.blit(title, (panel_rect.x + 24, panel_rect.y + 18))
+    if show_close_button:
+        draw_close_button(screen, pygame.Rect(panel_rect.right - 54, panel_rect.y + 16, 34, 34))
     hint = hud_font.render("Click any highlighted sector to pulse-scan", True, UI_COLORS["muted"])
     screen.blit(hint, (panel_rect.x + 24, panel_rect.y + 66))
     draw_tag(screen, panel_rect.x + 24, panel_rect.y + 88, "Live Sector Miniatures", hud_font, tone="accent")
@@ -281,6 +329,8 @@ def draw_map_panel(
         content_rect = cell["content_rect"]
         snapshot = explored_sectors.get(sector)
         intel = live_sector_intel.get(sector)
+        if tactical_visible_sectors is not None and sector not in tactical_visible_sectors:
+            intel = None
         owner_key = sector_owner_fn(sector) if sector_owner_fn is not None else "unknown"
 
         owner_tint = {
@@ -334,39 +384,52 @@ def draw_map_panel(
 
     info_x = layout["info_x"]
     info_y = layout["info_y"]
+    max_info_width = max(220, panel_rect.right - info_x - 20)
+    info_cursor_y = info_y
+
     scanner_text = panel_font.render(f"Scanner L{scanner_level}", True, UI_COLORS["accent_alt"])
-    screen.blit(scanner_text, (info_x, info_y))
+    info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, scanner_text)
 
     cooldown_text = hud_font.render(
         f"Cooldown: {max(0.0, scanner_cooldown):.1f}s",
         True,
         UI_COLORS["warn"] if scanner_cooldown > 0 else UI_COLORS["ok"],
     )
-    screen.blit(cooldown_text, (info_x, info_y + 30))
+    info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, cooldown_text)
 
-    range_text = hud_font.render("Scan Range: 3x3 around current sector", True, UI_COLORS["muted"])
-    screen.blit(range_text, (info_x, info_y + 52))
+    range_text = _truncate_to_width("Scan Range: 3x3 around current sector", hud_font, max_info_width)
+    info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(range_text, True, UI_COLORS["muted"]))
     pulse_size = 1 if scanner_level <= 1 else (5 if scanner_level == 2 else 9)
-    pulse_text = hud_font.render(f"Pulse Size: {pulse_size} sectors", True, UI_COLORS["muted"])
-    screen.blit(pulse_text, (info_x, info_y + 74))
-    legend1 = hud_font.render("Visited or scanned: exact station + planet snapshots", True, UI_COLORS["muted"])
-    legend2 = hud_font.render("Scanned: exact asteroids + seed-stable enemy contacts", True, UI_COLORS["muted"])
-    screen.blit(legend1, (info_x, info_y + 96))
-    screen.blit(legend2, (info_x, info_y + 118))
+    pulse_text = _truncate_to_width(f"Pulse Size: {pulse_size} sectors", hud_font, max_info_width)
+    info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(pulse_text, True, UI_COLORS["muted"]))
+
+    legend_lines = [
+        "Visited or scanned: exact station + planet snapshots",
+        "Scanned: exact asteroids + seed-stable enemy contacts",
+        "Scanned anomalies: black holes / radiation stars / nebula interference",
+        "Mining platforms: yellow triangle markers",
+    ]
+    for line in legend_lines:
+        line_text = _truncate_to_width(line, hud_font, max_info_width)
+        info_cursor_y, drew = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(line_text, True, UI_COLORS["muted"]))
+        if not drew:
+            break
+
     owner_legend = "Owner tint: Union/Crimson/Jade/Gold/Null"
-    screen.blit(hud_font.render(owner_legend, True, UI_COLORS["muted"]), (info_x, info_y + 140))
+    owner_legend_text = _truncate_to_width(owner_legend, hud_font, max_info_width)
+    info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(owner_legend_text, True, UI_COLORS["muted"]))
 
     if owner_label_fn is not None:
         current_owner = owner_label_fn(sector_owner_fn(active_sector))
-        owner_line = hud_font.render(f"Current Owner: {current_owner}", True, "#bfdbfe")
-        screen.blit(owner_line, (info_x, info_y + 162))
+        owner_line = _truncate_to_width(f"Current Owner: {current_owner}", hud_font, max_info_width)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(owner_line, True, "#bfdbfe"))
 
     if build_status_fn is not None:
         hovered = map_sector_at_point(panel_rect, active_sector, pygame.mouse.get_pos())
         target_sector = hovered if hovered is not None else active_sector
         status_text, status_color = build_status_fn(target_sector)
-        status_surface = hud_font.render(status_text, True, status_color)
-        screen.blit(status_surface, (info_x, info_y + 182))
+        status_line = _truncate_to_width(status_text, hud_font, max_info_width)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(status_line, True, status_color))
 
     if active_contract:
         target = active_contract["target_sector"]
@@ -374,7 +437,6 @@ def draw_map_panel(
         tile_distance = active_contract.get("tile_distance", 0)
         risk_rating = int(active_contract.get("risk_rating", 1))
         hazard_bonus = int(active_contract.get("hazard_bonus", 0))
-        max_info_width = 300
         line1 = hud_font.render("Active Contract", True, "#f6d365")
         contract_line = _truncate_to_width(
             (
@@ -400,12 +462,19 @@ def draw_map_panel(
         line4 = hud_font.render(f"Distance: {tile_distance} tiles | Risk: R{risk_rating}/5", True, "#fda4af")
         line5 = hud_font.render(f"Hazard Pay: +{hazard_bonus} gold", True, "#fdba74")
         line6 = hud_font.render(f"Offset: {dx:+d}, {dy:+d}", True, "#94a3b8")
-        screen.blit(line1, (info_x, info_y + 190))
-        screen.blit(line2, (info_x, info_y + 214))
-        screen.blit(line3, (info_x, info_y + 236))
-        screen.blit(line4, (info_x, info_y + 258))
-        screen.blit(line5, (info_x, info_y + 280))
-        screen.blit(line6, (info_x, info_y + 302))
+        anomaly_summary = active_contract.get("anomaly_tag_summary", "")
+        line7 = None
+        if anomaly_summary:
+            text = _truncate_to_width(f"Anomalies: {anomaly_summary}", hud_font, max_info_width)
+            line7 = hud_font.render(text, True, "#67e8f9")
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y + 4, line1)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line2)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line3)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line4)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line5)
+        info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line6)
+        if line7 is not None:
+            _blit_info_line(screen, panel_rect, info_x, info_cursor_y, line7)
     else:
         no_contract = hud_font.render("No active contract", True, "#94a3b8")
-        screen.blit(no_contract, (info_x, info_y + 190))
+        _blit_info_line(screen, panel_rect, info_x, info_cursor_y + 4, no_contract)

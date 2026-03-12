@@ -30,9 +30,28 @@ class Planet(CircleShape):
         pygame.draw.circle(screen, surface, (cx, cy), self.radius)
         pygame.draw.circle(screen, rim, (cx, cy), self.radius, 2)
 
+        cloud = (
+            min(255, int(surface[0] * 0.9) + 48),
+            min(255, int(surface[1] * 0.9) + 48),
+            min(255, int(surface[2] * 0.9) + 48),
+        )
+        cloud_shadow = (
+            max(20, int(cloud[0] * 0.45)),
+            max(20, int(cloud[1] * 0.45)),
+            max(20, int(cloud[2] * 0.45)),
+        )
+
+        # Three offset cloud puffs create an obvious planet-type color signal.
+        pygame.draw.circle(screen, cloud_shadow, (cx - 22, cy - 14), 10)
+        pygame.draw.circle(screen, cloud_shadow, (cx - 8, cy - 20), 9)
+        pygame.draw.circle(screen, cloud_shadow, (cx + 8, cy - 15), 8)
+        pygame.draw.circle(screen, cloud, (cx - 24, cy - 16), 10)
+        pygame.draw.circle(screen, cloud, (cx - 10, cy - 22), 9)
+        pygame.draw.circle(screen, cloud, (cx + 6, cy - 17), 8)
+
         # Ring and marker for trade readability.
         pygame.draw.circle(screen, (220, 230, 245), (cx, cy), self.radius + 8, 1)
-        pygame.draw.circle(screen, (245, 215, 90), (cx, cy - 6), 6)
+        pygame.draw.circle(screen, cloud, (cx, cy - 6), 6)
         pygame.draw.circle(screen, (26, 32, 48), (cx, cy - 6), 3)
 
     def update(self, dt, *args):

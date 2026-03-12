@@ -1,5 +1,6 @@
 import pygame
-from ui_theme import UI_COLORS, draw_button, draw_panel
+from ui_theme import UI_COLORS, draw_button, draw_close_button, draw_panel
+from resources import get_metal_color
 
 
 def _truncate_to_width(text, font, max_width):
@@ -15,20 +16,39 @@ def _truncate_to_width(text, font, max_width):
 
 def _mission_color(mission):
     mission_colors = {
-        "Freight": "#fca5a5",
-        "Charter": "#a5b4fc",
-        "Priority": "#fef08a",
-        "Survey": "#67e8f9",
-        "Courier": "#93c5fd",
-        "Medical": "#86efac",
-        "Relief": "#f9a8d4",
-        "Engineering": "#fdba74",
-        "Transport": "#c4b5fd",
-        "Diplomatic": "#fef08a",
-        "Evacuation": "#fca5a5",
-        "Science": "#67e8f9",
+        "Freight": "#d2646c",
+        "Charter": "#d0d0d8",
+        "Priority": "#e2e2ea",
+        "Survey": "#b8b8c6",
+        "Courier": "#ccccd8",
+        "Medical": "#c6c6d2",
+        "Relief": "#cf6b73",
+        "Engineering": "#c4c4d0",
+        "Transport": "#d6d6e0",
+        "Diplomatic": "#dcdce6",
+        "Evacuation": "#d15862",
+        "Science": "#bcbcc8",
     }
-    return mission_colors.get(mission, "#cbd5e1")
+    return mission_colors.get(mission, "#c8c8d2")
+
+
+def _draw_metal_chip(screen, x, y, metal_type, hud_font):
+    metal_color = get_metal_color(metal_type)
+    chip_rect = pygame.Rect(x, y, 18, 18)
+    pygame.draw.circle(screen, (18, 24, 36), chip_rect.center, 9)
+    pygame.draw.circle(screen, metal_color, chip_rect.center, 7)
+    pygame.draw.circle(screen, (232, 238, 247), chip_rect.center, 9, 1)
+    label = hud_font.render(metal_type, True, metal_color)
+    screen.blit(label, (x + 26, y - 1))
+
+
+def _draw_contract_market_tag(screen, x, y, metal_type, hud_font):
+    metal_color = get_metal_color(metal_type)
+    pygame.draw.circle(screen, (16, 24, 38), (x + 7, y + 7), 7)
+    pygame.draw.circle(screen, metal_color, (x + 7, y + 7), 5)
+    pygame.draw.circle(screen, (232, 238, 247), (x + 7, y + 7), 7, 1)
+    label = hud_font.render(f"{metal_type} market", True, metal_color)
+    screen.blit(label, (x + 18, y - 2))
 
 
 def _missing_requirements(player, job):
@@ -59,6 +79,8 @@ def _missing_requirements(player, job):
 
 
 def resolve_planet_click(mouse_pos, planet_ui):
+    if planet_ui.get("close") and planet_ui["close"].collidepoint(mouse_pos):
+        return "close"
     if planet_ui.get("trade") and planet_ui["trade"].collidepoint(mouse_pos):
         return "trade"
     if planet_ui.get("undock") and planet_ui["undock"].collidepoint(mouse_pos):
@@ -90,41 +112,72 @@ def draw_planet_panel(
     planet_ui,
     owner_label="Unknown",
     player_controls=False,
+    settlement_happiness=None,
 ):
     draw_panel(screen, panel_rect, border_color=UI_COLORS["accent_alt"])
     contract_font = pygame.font.Font(None, max(16, hud_font.get_height() - 4))
-    contract_max_width = 258
+    content_left = panel_rect.x + 20
+    content_right = panel_rect.right - 20
+    content_width = panel_rect.width - 40
+    column_gap = 24
+    left_col_width = max(280, min(380, (content_width - column_gap) // 2))
+    right_col_x = content_left + left_col_width + column_gap
+    right_col_width = content_right - right_col_x
+    contract_max_width = max(280, right_col_width)
 
     title = panel_font.render("Planet Trade Hub", True, UI_COLORS["text"])
     screen.blit(title, (panel_rect.x + 20, panel_rect.y + 18))
+    planet_ui["close"] = pygame.Rect(panel_rect.right - 54, panel_rect.y + 16, 34, 34)
+    draw_close_button(screen, planet_ui["close"])
     owner_color = UI_COLORS["ok"] if player_controls else UI_COLORS["warn"]
     owner_text = hud_font.render(f"Owner: {owner_label}", True, owner_color)
-    screen.blit(owner_text, (panel_rect.x + 300, panel_rect.y + 24))
-    sub = hud_font.render(
-        f"Buys: {planet.accepted_metal} at {metal_prices.get(planet.accepted_metal, 0)} gold/unit",
-        True,
-        UI_COLORS["ok"],
-    )
-    screen.blit(sub, (panel_rect.x + 20, panel_rect.y + 52))
+    owner_x = max(panel_rect.x + 260, panel_rect.right - owner_text.get_width() - 20)
+    screen.blit(owner_text, (owner_x, panel_rect.y + 24))
+    metal_price = metal_prices.get(planet.accepted_metal, 0)
+    buys_prefix = hud_font.render("Buys:", True, UI_COLORS["ok"])
+    screen.blit(buys_prefix, (panel_rect.x + 20, panel_rect.y + 52))
+    _draw_metal_chip(screen, panel_rect.x + 72, panel_rect.y + 52, planet.accepted_metal, hud_font)
+    price_suffix = hud_font.render(f"at {metal_price} gold/unit", True, UI_COLORS["ok"])
+    screen.blit(price_suffix, (panel_rect.x + 210, panel_rect.y + 52))
     if not player_controls:
         claim_hint = hud_font.render("Press C to claim planet (hostiles must be cleared)", True, UI_COLORS["warn"])
         screen.blit(claim_hint, (panel_rect.x + 20, panel_rect.y + 72))
+    elif settlement_happiness is not None:
+        score = max(0.0, float(settlement_happiness))
+        mood_color = UI_COLORS["ok"] if score >= 1.0 else UI_COLORS["warn"]
+        mood_line = hud_font.render(f"Settlement happiness: {score:.2f}", True, mood_color)
+        screen.blit(mood_line, (panel_rect.x + 20, panel_rect.y + 72))
 
-    cargo_line = hud_font.render(
-        f"You carry: {player.metals.get(planet.accepted_metal, 0)} {planet.accepted_metal}",
+    cargo_prefix = hud_font.render(
+        f"You carry: {player.metals.get(planet.accepted_metal, 0)}",
         True,
         UI_COLORS["muted"],
     )
-    screen.blit(cargo_line, (panel_rect.x + 20, panel_rect.y + 104))
+    screen.blit(cargo_prefix, (panel_rect.x + 20, panel_rect.y + 104))
+    _draw_metal_chip(screen, panel_rect.x + 156, panel_rect.y + 104, planet.accepted_metal, hud_font)
 
-    left_col_width = max(260, min(360, panel_rect.width // 2 - 56))
-    planet_ui["trade"] = pygame.Rect(panel_rect.x + 20, panel_rect.y + 126, left_col_width, 36)
+    market_title = panel_font.render("Market Actions", True, UI_COLORS["accent_alt"])
+    market_top = panel_rect.y + 126
+    screen.blit(market_title, (content_left, market_top))
+
+    market_lines = [
+        f"Accepted metal: {planet.accepted_metal}",
+        f"Unit price: {metal_price} gold",
+        f"Cargo on hand: {player.metals.get(planet.accepted_metal, 0)} units",
+    ]
+    if player_controls and settlement_happiness is not None:
+        market_lines.append(f"Settlement happiness: {max(0.0, float(settlement_happiness)):.2f}")
+    for idx, line in enumerate(market_lines):
+        screen.blit(hud_font.render(line, True, UI_COLORS["muted"]), (content_left, market_top + 28 + idx * 22))
+
+    trade_y = market_top + 108
+    planet_ui["trade"] = pygame.Rect(content_left, trade_y, left_col_width, 38)
     draw_button(screen, planet_ui["trade"], "Sell Accepted Metal", panel_font, active=True, tone="alt")
 
     jobs_title = panel_font.render("Local Contracts", True, UI_COLORS["accent"])
-    jobs_x = panel_rect.x + panel_rect.width // 2 + 16
-    contract_max_width = max(220, panel_rect.right - jobs_x - 20)
-    screen.blit(jobs_title, (jobs_x, panel_rect.y + 126))
+    jobs_x = right_col_x
+    jobs_top = market_top
+    screen.blit(jobs_title, (jobs_x, jobs_top))
 
     planet_ui["deliver_contract"] = None
 
@@ -139,10 +192,10 @@ def draw_planet_panel(
             contract_max_width,
         )
         active_surface = contract_font.render(active_line, True, UI_COLORS["accent"])
-        screen.blit(active_surface, (jobs_x, panel_rect.y + 148))
+        screen.blit(active_surface, (jobs_x, jobs_top + 24))
 
         if active_sector == active_contract["target_sector"]:
-            planet_ui["deliver_contract"] = pygame.Rect(jobs_x, panel_rect.y + 172, contract_max_width, 24)
+            planet_ui["deliver_contract"] = pygame.Rect(jobs_x, jobs_top + 48, contract_max_width, 34)
             draw_button(
                 screen,
                 planet_ui["deliver_contract"],
@@ -155,7 +208,12 @@ def draw_planet_panel(
         planet_ui[f"job_{idx}"] = None
         planet_ui[f"job_disabled_{idx}"] = False
 
-    for idx, job in enumerate(jobs[:3]):
+    job_row_height = 108
+    jobs_top = jobs_top + 94
+    jobs_bottom_limit = panel_rect.bottom - 74
+    visible_rows = max(1, min(3, (jobs_bottom_limit - jobs_top) // job_row_height))
+
+    for idx, job in enumerate(jobs[:visible_rows]):
         is_active = active_contract == job
         at_destination_sector = active_sector == job["target_sector"]
         at_origin = (
@@ -175,7 +233,7 @@ def draw_planet_panel(
         else:
             action_label = "Accept"
 
-        y = panel_rect.y + 162 + idx * 96
+        y = jobs_top + idx * job_row_height
         line_text = _truncate_to_width(
             (
                 f"{job['mission']}: {job['amount']} {job['unit']} | "
@@ -203,6 +261,7 @@ def draw_planet_panel(
             UI_COLORS["muted"],
         )
         screen.blit(line, (jobs_x, y))
+        _draw_contract_market_tag(screen, jobs_x + contract_max_width - 126, y + 2, planet.accepted_metal, contract_font)
         screen.blit(dest, (jobs_x, y + 20))
 
         if missing:
@@ -220,8 +279,8 @@ def draw_planet_panel(
 
         key = f"job_{idx}"
         planet_ui[f"job_disabled_{idx}"] = (action_label == "Locked")
-        planet_ui[key] = pygame.Rect(jobs_x, y + 66, contract_max_width, 24)
+        planet_ui[key] = pygame.Rect(jobs_x, y + 68, contract_max_width, 34)
         draw_button(screen, planet_ui[key], action_label, contract_font, active=(action_label == "Deliver"))
 
-    planet_ui["undock"] = pygame.Rect(panel_rect.x + 20, panel_rect.bottom - 54, 220, 34)
+    planet_ui["undock"] = pygame.Rect(content_left, panel_rect.bottom - 60, 260, 40)
     draw_button(screen, planet_ui["undock"], "Take Off", hud_font)

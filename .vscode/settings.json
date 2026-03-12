@@ -1,6 +1,7 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "terminal.integrated.env.linux": {
-    "SDL_AUDIODRIVER": "dummy"
+    "SDL_AUDIODRIVER": "dummy",
+    "SDL_VIDEODRIVER": "x11"
   }
 }

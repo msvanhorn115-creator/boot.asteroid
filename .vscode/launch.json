@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: main.py (pygame)",
+      "name": "Python: main.py (pygame, decorated default)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
@@ -11,7 +11,22 @@
       "justMyCode": true,
       "env": {
         "PYTHONUNBUFFERED": "1",
-        "SDL_AUDIODRIVER": "dummy"
+        "SDL_AUDIODRIVER": "dummy",
+        "SDL_VIDEODRIVER": "x11"
+      }
+    },
+    {
+      "name": "Python: main.py (pygame, Wayland fallback)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "SDL_AUDIODRIVER": "dummy",
+        "SDL_VIDEODRIVER": "wayland"
       }
     }
   ]

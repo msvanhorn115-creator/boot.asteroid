@@ -46,6 +46,18 @@ from constants import (
     UPGRADE_ENGINE_TUNING_BASE_COST,
     UPGRADE_ENGINE_TUNING_STEP_COST,
     UPGRADE_ENGINE_TUNING_MAX_LEVEL,
+    UPGRADE_WEAPON_AMP_BASE_COST,
+    UPGRADE_WEAPON_AMP_STEP_COST,
+    UPGRADE_WEAPON_AMP_MAX_LEVEL,
+    UPGRADE_DEFLECTOR_BASE_COST,
+    UPGRADE_DEFLECTOR_STEP_COST,
+    UPGRADE_DEFLECTOR_MAX_LEVEL,
+    UPGRADE_MISSILE_PAYLOAD_BASE_COST,
+    UPGRADE_MISSILE_PAYLOAD_STEP_COST,
+    UPGRADE_MISSILE_PAYLOAD_MAX_LEVEL,
+    UPGRADE_AUTO_MINING_BASE_COST,
+    UPGRADE_AUTO_MINING_STEP_COST,
+    UPGRADE_AUTO_MINING_MAX_LEVEL,
 )
 from circleshape import CircleShape
 from shot import Shot
@@ -53,6 +65,8 @@ from resources import METAL_ECONOMY
 
 
 class Player(CircleShape):
+    DEFLECTOR_REGEN_SECONDS = 12.0
+
     def __init__(self, x, y):
         super().__init__(x, y, PLAYER_RADIUS)
         self.rotation = 0
@@ -65,6 +79,9 @@ class Player(CircleShape):
         self.shield_level = 0
         self.shield_layers = 0
         self.shield_regen_timer = 0.0
+        self.deflector_level = 1
+        self.deflector_layers = 1
+        self.deflector_regen_timer = 0.0
         self.multishot_level = 0
         self.targeting_beam_level = 0
         self.targeting_computer_level = 0
@@ -83,6 +100,10 @@ class Player(CircleShape):
         self.cargo_hold_level = 0
         self.accommodations_level = 0
         self.engine_tuning_level = 0
+        self.weapon_amp_level = 0
+        self.deflector_booster_level = 0
+        self.missile_payload_level = 0
+        self.auto_mining_level = 0
         self.virtual_controls = {
             "left": False,
             "right": False,
@@ -400,6 +421,73 @@ class Player(CircleShape):
         self.engine_tuning_level += 1
         return True, f"Engine tuning upgraded to L{self.engine_tuning_level}"
 
+    def get_weapon_amp_upgrade_cost(self):
+        base_cost = UPGRADE_WEAPON_AMP_BASE_COST + (self.weapon_amp_level * UPGRADE_WEAPON_AMP_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_weapon_amp_upgrade(self):
+        if self.weapon_amp_level >= UPGRADE_WEAPON_AMP_MAX_LEVEL:
+            return False, "Weapon amplifier already maxed"
+
+        cost = self.get_weapon_amp_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.weapon_amp_level += 1
+        return True, f"Weapon amplifier upgraded to L{self.weapon_amp_level}"
+
+    def get_deflector_upgrade_cost(self):
+        base_cost = UPGRADE_DEFLECTOR_BASE_COST + (self.deflector_booster_level * UPGRADE_DEFLECTOR_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_deflector_upgrade(self):
+        if self.deflector_booster_level >= UPGRADE_DEFLECTOR_MAX_LEVEL:
+            return False, "Deflector array already maxed"
+
+        cost = self.get_deflector_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.deflector_booster_level += 1
+        self.refill_deflector()
+        return True, f"Deflector array upgraded to L{self.deflector_booster_level}"
+
+    def get_missile_payload_upgrade_cost(self):
+        base_cost = UPGRADE_MISSILE_PAYLOAD_BASE_COST + (self.missile_payload_level * UPGRADE_MISSILE_PAYLOAD_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_missile_payload_upgrade(self):
+        if self.missile_level <= 0:
+            return False, "Need missile launcher upgrade first"
+        if self.missile_payload_level >= UPGRADE_MISSILE_PAYLOAD_MAX_LEVEL:
+            return False, "Missile payload already maxed"
+
+        cost = self.get_missile_payload_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.missile_payload_level += 1
+        return True, f"Missile payload upgraded to L{self.missile_payload_level}"
+
+    def get_auto_mining_upgrade_cost(self):
+        base_cost = UPGRADE_AUTO_MINING_BASE_COST + (self.auto_mining_level * UPGRADE_AUTO_MINING_STEP_COST)
+        return int(round(base_cost * self.upgrade_cost_multiplier))
+
+    def buy_auto_mining_upgrade(self):
+        if self.auto_mining_level >= UPGRADE_AUTO_MINING_MAX_LEVEL:
+            return False, "Shipboard miners already maxed"
+
+        cost = self.get_auto_mining_upgrade_cost()
+        if self.credits < cost:
+            return False, f"Need {cost} gold"
+
+        self.credits -= cost
+        self.auto_mining_level += 1
+        return True, f"Shipboard miners upgraded to L{self.auto_mining_level}"
+
     def disable_cloak(self):
         self.cloak_active = False
         self.cloak_timer = 0.0
@@ -442,10 +530,47 @@ class Player(CircleShape):
         return gained_levels
 
     def get_combat_damage_multiplier(self):
+        return self.get_combat_level_damage_multiplier() * self.get_weapon_amp_multiplier()
+
+    def get_combat_level_damage_multiplier(self):
         return 1.0 + max(0, self.combat_level - 1) * 0.07
+
+    def get_weapon_amp_multiplier(self):
+        return 1.0 + self.weapon_amp_level * 0.18
 
     def get_combat_damage(self):
         return self.get_combat_damage_multiplier()
+
+    def get_deflector_capacity(self):
+        return self.deflector_level + self.deflector_booster_level
+
+    def get_deflector_regen_seconds(self):
+        return max(6.0, self.DEFLECTOR_REGEN_SECONDS - self.deflector_booster_level * 1.25)
+
+    def get_missile_payload_multiplier(self):
+        return 1.0 + self.missile_payload_level * 0.14
+
+    def get_missile_damage(self):
+        base_damage = 1.7 + self.missile_level * 0.7
+        return base_damage * self.get_combat_damage_multiplier() * self.get_missile_payload_multiplier()
+
+    def get_missile_splash_radius(self):
+        return 60 + self.missile_level * 12 + self.missile_payload_level * 8
+
+    def get_auto_mining_drone_count(self):
+        if self.auto_mining_level <= 0:
+            return 0
+        return 1 if self.auto_mining_level < 3 else 2
+
+    def get_auto_mining_range(self):
+        if self.auto_mining_level <= 0:
+            return 0.0
+        return 125.0 + self.auto_mining_level * 36.0
+
+    def get_auto_mining_harvest_rate(self):
+        if self.auto_mining_level <= 0:
+            return 0.0
+        return 0.34 + self.auto_mining_level * 0.10
 
     def credits_needed_for_full_upgrades(self):
         needed = 0
@@ -507,11 +632,33 @@ class Player(CircleShape):
             base_cost = UPGRADE_ENGINE_TUNING_BASE_COST + (lvl * UPGRADE_ENGINE_TUNING_STEP_COST)
             needed += int(round(base_cost * cost_multiplier))
 
+        for lvl in range(self.weapon_amp_level, UPGRADE_WEAPON_AMP_MAX_LEVEL):
+            base_cost = UPGRADE_WEAPON_AMP_BASE_COST + (lvl * UPGRADE_WEAPON_AMP_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.deflector_booster_level, UPGRADE_DEFLECTOR_MAX_LEVEL):
+            base_cost = UPGRADE_DEFLECTOR_BASE_COST + (lvl * UPGRADE_DEFLECTOR_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
+        if self.missile_level > 0:
+            for lvl in range(self.missile_payload_level, UPGRADE_MISSILE_PAYLOAD_MAX_LEVEL):
+                base_cost = UPGRADE_MISSILE_PAYLOAD_BASE_COST + (lvl * UPGRADE_MISSILE_PAYLOAD_STEP_COST)
+                needed += int(round(base_cost * cost_multiplier))
+
+        for lvl in range(self.auto_mining_level, UPGRADE_AUTO_MINING_MAX_LEVEL):
+            base_cost = UPGRADE_AUTO_MINING_BASE_COST + (lvl * UPGRADE_AUTO_MINING_STEP_COST)
+            needed += int(round(base_cost * cost_multiplier))
+
         return needed
 
     def refill_shields(self):
         self.shield_layers = self.shield_level
         self.shield_regen_timer = 0.0
+        self.refill_deflector()
+
+    def refill_deflector(self):
+        self.deflector_layers = self.get_deflector_capacity()
+        self.deflector_regen_timer = 0.0
 
     def absorb_hit(self):
         if self.shield_layers > 0:
@@ -519,6 +666,13 @@ class Player(CircleShape):
             self.shield_regen_timer = 0.0
             return True
         return False
+
+    def absorb_deflector_hit(self):
+        if self.deflector_layers <= 0:
+            return False
+        self.deflector_layers -= 1
+        self.deflector_regen_timer = 0.0
+        return True
 
     def multishot_pattern(self):
         if self.multishot_level <= 0:
@@ -625,6 +779,27 @@ class Player(CircleShape):
                 2 + int(2 * thrust_pulse),
             )
 
+        if self.deflector_layers > 0:
+            deflector_pulse = 0.7 + 0.3 * math.sin(pygame.time.get_ticks() * 0.01)
+            deflector_color = (
+                min(255, int(220 * deflector_pulse)),
+                min(255, int(208 * deflector_pulse)),
+                120,
+            )
+            deflector_radius = int(self.radius + 5 + max(0, self.get_deflector_capacity() - 1) * 2)
+            pygame.draw.circle(
+                screen,
+                deflector_color,
+                (int(center.x), int(center.y)),
+                deflector_radius,
+                1,
+            )
+            if self.get_deflector_capacity() > 1:
+                for index in range(self.deflector_layers):
+                    angle = (pygame.time.get_ticks() * 0.06) + (360.0 / self.deflector_layers) * index
+                    pip_pos = center + pygame.Vector2(deflector_radius + 5, 0).rotate(angle)
+                    pygame.draw.circle(screen, deflector_color, (int(pip_pos.x), int(pip_pos.y)), 2)
+
         if self.shield_level > 0:
             shield_ratio = 0.0
             shield_ratio = self.shield_layers / float(self.shield_level)
@@ -719,6 +894,13 @@ class Player(CircleShape):
             self.cloak_timer = max(0.0, self.cloak_timer - dt)
             if self.cloak_timer <= 0.0:
                 self.disable_cloak()
+
+        max_deflector_layers = self.get_deflector_capacity()
+        if max_deflector_layers > 0 and self.deflector_layers < max_deflector_layers:
+            self.deflector_regen_timer += dt
+            if self.deflector_regen_timer >= self.get_deflector_regen_seconds():
+                self.deflector_layers = max_deflector_layers
+                self.deflector_regen_timer = 0.0
 
         if self.shield_level > 0 and self.shield_layers < self.shield_level:
             self.shield_regen_timer += dt

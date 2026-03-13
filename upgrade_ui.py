@@ -13,6 +13,10 @@ from constants import (
     UPGRADE_CARGO_HOLD_MAX_LEVEL,
     UPGRADE_ACCOMMODATIONS_MAX_LEVEL,
     UPGRADE_ENGINE_TUNING_MAX_LEVEL,
+    UPGRADE_WEAPON_AMP_MAX_LEVEL,
+    UPGRADE_DEFLECTOR_MAX_LEVEL,
+    UPGRADE_MISSILE_PAYLOAD_MAX_LEVEL,
+    UPGRADE_AUTO_MINING_MAX_LEVEL,
 )
 
 
@@ -29,6 +33,10 @@ UPGRADE_BUTTON_KEYS = [
     "buy_cargo_hold",
     "buy_accommodations",
     "buy_engine_tuning",
+    "buy_weapon_amp",
+    "buy_deflector",
+    "buy_missile_payload",
+    "buy_auto_mining",
 ]
 
 
@@ -93,6 +101,30 @@ def compute_upgrade_cost_texts(player):
         if player.engine_tuning_level >= UPGRADE_ENGINE_TUNING_MAX_LEVEL
         else f"{player.get_engine_tuning_upgrade_cost()} gold"
     )
+    weapon_amp_cost_text = (
+        "MAXED"
+        if player.weapon_amp_level >= UPGRADE_WEAPON_AMP_MAX_LEVEL
+        else f"{player.get_weapon_amp_upgrade_cost()} gold"
+    )
+    deflector_cost_text = (
+        "MAXED"
+        if player.deflector_booster_level >= UPGRADE_DEFLECTOR_MAX_LEVEL
+        else f"{player.get_deflector_upgrade_cost()} gold"
+    )
+    missile_payload_cost_text = (
+        "Need missiles"
+        if player.missile_level <= 0 and player.missile_payload_level <= 0
+        else (
+            "MAXED"
+            if player.missile_payload_level >= UPGRADE_MISSILE_PAYLOAD_MAX_LEVEL
+            else f"{player.get_missile_payload_upgrade_cost()} gold"
+        )
+    )
+    auto_mining_cost_text = (
+        "MAXED"
+        if player.auto_mining_level >= UPGRADE_AUTO_MINING_MAX_LEVEL
+        else f"{player.get_auto_mining_upgrade_cost()} gold"
+    )
 
     return {
         "buy_fire_rate": fire_cost_text,
@@ -107,6 +139,10 @@ def compute_upgrade_cost_texts(player):
         "buy_cargo_hold": cargo_hold_cost_text,
         "buy_accommodations": accommodations_cost_text,
         "buy_engine_tuning": engine_tuning_cost_text,
+        "buy_weapon_amp": weapon_amp_cost_text,
+        "buy_deflector": deflector_cost_text,
+        "buy_missile_payload": missile_payload_cost_text,
+        "buy_auto_mining": auto_mining_cost_text,
     }
 
 
@@ -142,6 +178,22 @@ def build_upgrade_lines(player):
             f"Engine Tuning L{player.engine_tuning_level} | "
             f"Speed x{player.get_engine_speed_multiplier():.2f}"
         ),
+        (
+            f"Weapon Amp L{player.weapon_amp_level} | "
+            f"Laser x{player.get_weapon_amp_multiplier():.2f}"
+        ),
+        (
+            f"Deflector Array L{player.deflector_booster_level} | "
+            f"Layers: {player.deflector_layers}/{player.get_deflector_capacity()}"
+        ),
+        (
+            f"Missile Payload L{player.missile_payload_level} | "
+            f"DMG: {player.get_missile_damage():.1f} | Splash: {player.get_missile_splash_radius()}"
+        ),
+        (
+            f"Shipboard Miners L{player.auto_mining_level} | "
+            f"Drones: {player.get_auto_mining_drone_count()} | Range: {player.get_auto_mining_range():.0f}"
+        ),
     ]
 
 
@@ -165,6 +217,10 @@ def build_upgrade_button_rects(panel_rect):
         "buy_cargo_hold",
         "buy_accommodations",
         "buy_engine_tuning",
+        "buy_weapon_amp",
+        "buy_deflector",
+        "buy_missile_payload",
+        "buy_auto_mining",
     ]
 
     rects = {}
@@ -193,4 +249,8 @@ def build_upgrade_button_labels(cost_texts):
         "buy_cargo_hold": f"Upgrade Cargo Hold ({cost_texts['buy_cargo_hold']})",
         "buy_accommodations": f"Upgrade Accommodations ({cost_texts['buy_accommodations']})",
         "buy_engine_tuning": f"Upgrade Engine Tuning ({cost_texts['buy_engine_tuning']})",
+        "buy_weapon_amp": f"Upgrade Weapon Amplifier ({cost_texts['buy_weapon_amp']})",
+        "buy_deflector": f"Upgrade Deflector Array ({cost_texts['buy_deflector']})",
+        "buy_missile_payload": f"Upgrade Missile Payload ({cost_texts['buy_missile_payload']})",
+        "buy_auto_mining": f"Upgrade Shipboard Miners ({cost_texts['buy_auto_mining']})",
     }

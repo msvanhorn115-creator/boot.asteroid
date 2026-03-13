@@ -121,4 +121,47 @@ def apply_upgrade(player, upgrade_key):
         }
         return success, message, event_data
 
+    if upgrade_key == "weapon_amp":
+        success, message = player.buy_weapon_amp_upgrade()
+        event_data = {
+            "upgrade": "weapon_amp",
+            "level": player.weapon_amp_level,
+            "damage_mult": round(player.get_weapon_amp_multiplier(), 2),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "deflector":
+        success, message = player.buy_deflector_upgrade()
+        event_data = {
+            "upgrade": "deflector",
+            "level": player.deflector_booster_level,
+            "layers": player.get_deflector_capacity(),
+            "regen_seconds": round(player.get_deflector_regen_seconds(), 1),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "missile_payload":
+        success, message = player.buy_missile_payload_upgrade()
+        event_data = {
+            "upgrade": "missile_payload",
+            "level": player.missile_payload_level,
+            "damage": round(player.get_missile_damage(), 2),
+            "splash_radius": player.get_missile_splash_radius(),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
+    if upgrade_key == "auto_mining":
+        success, message = player.buy_auto_mining_upgrade()
+        event_data = {
+            "upgrade": "auto_mining",
+            "level": player.auto_mining_level,
+            "drone_count": player.get_auto_mining_drone_count(),
+            "range": round(player.get_auto_mining_range(), 1),
+            "credits_left": player.credits,
+        }
+        return success, message, event_data
+
     raise ValueError(f"Unknown upgrade key: {upgrade_key}")

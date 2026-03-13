@@ -4,17 +4,24 @@
 This file is the canonical living design document for `boot.asteroid`.
 
 Use this as the source of truth between sessions.
-Update it after meaningful implementation passes.
+During active implementation, update only the TODO/checklist state.
 Do not treat it as a chronological session log.
 
-When an idea is completed, move it into the relevant "Current State" section below.
+Fold completed work into the broader sections only during an intentional doc-refresh pass near push time.
 
 ## Between-Pass Rule
 For every implementation pass, do this before ending the pass:
-1. Check this document for drift vs current code state.
-2. Update "Current State" with completed behavior.
-3. Update "Active TODO Queue" with next concrete slices.
-4. Remove TODOs that are now complete by folding them into "Current State".
+1. Read `Active TODO Queue` before starting work.
+2. Execute one concrete TODO slice.
+3. Verify changed files for errors.
+4. Update only the TODO/checklist state here.
+5. Defer broader doc refresh until the implementation batch is done and the repo is being prepared for push.
+
+## Final Doc Cleanup Rule
+When the implementation batch is closing out and the repo is being prepared for push:
+1. Fold every completed TODO into the relevant `Current State` or other long-lived sections.
+2. Remove completed TODO items from `Active TODO Queue` before adding any brand-new follow-up TODOs.
+3. Only leave genuinely unfinished work in `Active TODO Queue`.
 
 ## Working Procedure
 Use this operating procedure on every pass:
@@ -22,10 +29,13 @@ Use this operating procedure on every pass:
 2. Pick one small, shippable slice from `Active TODO Queue`.
 3. Implement with keyboard/mouse compatibility preserved while improving touch-forward behavior where applicable.
 4. Verify changed files for errors.
-5. Update this document:
-	- move completed work into `Current State`
-	- refresh `Active TODO Queue`
-	- keep `Future Implementation Fronts` aligned with current priorities
+5. Update this document only by checking off completed TODO items or adding the next concrete TODO if necessary.
+6. Defer `Current State`, `Future Implementation Fronts`, and broader writeups until the end-of-batch doc pass before push.
+
+During the final doc cleanup pass before push:
+1. Refresh `Current State` and any other relevant sections to absorb completed work.
+2. Remove completed TODOs from `Active TODO Queue`.
+3. Add new TODOs only after completed items have been folded in and removed.
 
 ## Core Loop
 `explore -> scan -> discover -> trade/contract -> earn resources -> upgrade/build -> claim/expand -> defend -> explore further`
@@ -77,6 +87,7 @@ All systems should reinforce this loop.
 	- infrastructure modules now have distinct world-space silhouettes/animation for at-a-glance combat readability.
 	- shield net now provides module damage mitigation and gradual infrastructure regeneration.
 	- interceptor drones can now probabilistically intercept incoming hostile shots near defended stations.
+	- player-owned stations now surface combat hull loss and disabled-state recovery timers in world-space and HUD messaging so station attrition is readable without opening panels.
 	- mining drones now feed both credits and shared `parts` resource output into the sector economy network.
 	- dedicated mining platforms are now deployable from the Build tab as a separate defendable buildable (not a station-upgrade level).
 	- mining platforms render in world space with health bars and contribute passive credits + `parts` while alive.
@@ -126,6 +137,7 @@ All systems should reinforce this loop.
 	- higher payout/hazard bonus
 	- elevated risk/pressure metadata
 	- anomaly tag summary visible in map contract details
+- Active contract cargo/passenger payload is now surfaced directly in the cargo panel and can be manually dumped/spaced from the pause overlay.
 
 ### Difficulty and Progression Scaling
 - Difficulty profiles now differ in more than raw stats:
@@ -133,7 +145,7 @@ All systems should reinforce this loop.
 	- enemy speed/health/view/shoot cadence
 	- economy/drop/upgrade multipliers
 - Aggregate player progression is represented by `Command Level` (not combat-only).
-- Command Level is displayed in HUD and the `I` ship systems panel.
+- Command Level is displayed in the HUD and the dedicated `S` Status panel.
 - Enemy pressure scales with contract pressure and Command Level.
 - Threat and pressure growth are now difficulty-configurable via per-profile curve knobs:
 	- `command_threat_step`
@@ -144,42 +156,51 @@ All systems should reinforce this loop.
 - Pause/menu difficulty card now displays key AI multipliers for rapid tuning verification.
 - Difficulty verification sweep has been run against low/mid/high Command Levels to smooth hard-mode early spikes while preserving hard-mode identity.
 - Enemy contact faction metadata is now normalized during persistent-pack hydration and enemy sync fallback creation, so contact visuals/behavior remain aligned with sector/raid claim context.
+- Command Level and ship capability readouts now live in the dedicated `S` Status panel instead of the cargo-focused `I` panel.
+
+### Player Combat and Mobility
+- New ship upgrade tracks are active and purchasable from stations:
+	- weapon amplifier
+	- deflector array
+	- missile payload
+	- shipboard miners
+- Deflector layers now absorb asteroid impacts separately from shields and regenerate over time.
+- Player missiles now use guided targeting behavior and inherit missile-payload damage/splash scaling.
+- Owned-sector FTL hops are now available from the map overlay for owned sectors within warp-drive range.
+- Shipboard miners now render visible support drones around the player and auto-harvest nearby asteroids into hold cargo.
 
 ### Touch-Forward Controls
 - Optional on-screen action controls are now available during live flight for:
-	- fire
+	- build
 	- interact
 	- map
 	- pause
-- Optional on-screen movement controls are now available during live flight via a touch D-pad:
-	- rotate left/right
-	- thrust forward/reverse
 - Touch actions preserve keyboard/mouse parity by routing into existing key-driven gameplay behavior.
-- Touch D-pad latching now re-evaluates per frame from tracked pointer positions (with small hit-margin expansion), improving rotate/thrust/reverse reliability for hold and drag-into-pad gestures.
-- D-pad direction resolution is now deterministic under overlap/edge cases:
-	- when expanded hitboxes overlap, nearest directional center wins
-	- when inside the overall D-pad bounds but between buttons, dominant-axis fallback selects a direction
 - Touchscreen finger events now convert normalized `FINGER*` coordinates using the active display surface size (not static constants), improving touch-to-button alignment on real hardware/window scales.
-- Touch D-pad input now drops direction immediately on explicit finger/mouse release, while keeping only a very short jitter-grace window for transient event gaps during active holds.
 - Docked and pause/menu overlays now use larger touch targets for key actions:
 	- contract deliver/accept
 	- station infrastructure upgrades
 	- undock/take off
-	- controls/audio/map pause-menu actions
+	- controls/audio pause-menu actions
+	- pause-nav tab switching
+- Current code state does not provide touch flight movement; only action overlays are active.
 
 ### Pause Menu and Tabs
 - Pause is now both keyboard and clickable/touchable via the top-right `Esc: Pause` button.
+
 - Player-facing pause flows are tab-driven inside one pause shell:
 	- Home
 	- Map
-	- Ship
+	- Cargo
+	- Status
 	- Build
-	- Controls
-	- Audio
+- Controls and Audio now live as subpanes inside Pause Home rather than top-level pause tabs.
 - Hotkeys jump directly to tabs while paused/playing:
 	- `M` map
-	- `I` ship
+	- `I` cargo
+	- `S` status
 	- `B` build
+- `Tab` / `Shift+Tab` now cycle the shared pause tabs.
 - Controls tab is now grouped for faster scanning:
 	- Flight
 	- Combat
@@ -202,10 +223,14 @@ All systems should reinforce this loop.
 	- station and planet contract panes now cap visible rows by available vertical budget
 	- map side-info stack now uses cursor-based budgeted rendering instead of fixed y offsets
 	- build panel now uses resolution-scaled margins/tab widths to avoid edge crowding
+- Shared top pause navigation is now rendered across Pause, Map, Cargo, Status, and Build so the overlay shell stays visually consistent.
+- The old ship-local `Inventory/Map` tab model has been removed; map routing now comes only from the shared pause tab state.
 - Esc behavior now matches pause-menu messaging:
 	- Esc from `playing` opens pause
 	- Esc from `paused` resumes gameplay
 	- Esc from `menu` exits game
+- A non-interactive smoke check now exists at `scripts/smoke_overlay_flow.py` to guard pause/map/cargo/status wiring between manual playtest passes.
+- A final hands-on live sweep has now been run against docking/landing, pause-tab flow, build placement, and cargo/status transitions as the last pre-push gate for this batch.
 
 ## Balance Maintenance Policy
 - Recalibrate Command Level weighting whenever new defenses, automation, ownership mechanics, or strategic systems are added.
@@ -227,13 +252,11 @@ All systems should reinforce this loop.
 ### Front C: Exploration Depth
 - Extend anomaly interactions (events/rewards/failure states) while keeping soft-gate philosophy.
 
+### Front D: Codebase Decomposition
+- Split the pause/input/render helpers in `main.py` into smaller focused modules after the current push-ready gameplay batch is stable.
+
 ## Active TODO Queue
-- Front B next slice:
-	- priority 1: tune mining drone travel/harvest cadence and payout feel now that drones can respond sector-wide.
-- Front B next slice:
-	- priority 2: tune `onslaught_alpha` vs `onslaught_barrage` so the two standalone turret roles stay mechanically distinct under raid pressure.
-- Front B next slice:
-	- priority 3: remove remaining duplicate stale blocks in `main.py` that can still override active gameplay/render paths.
+- No active pre-push TODOs. Future follow-up work lives under `Future Implementation Fronts`.
 
 ## Acceptance Gate (For Any New Feature)
 1. Strengthens at least one core-loop step.

@@ -18,19 +18,30 @@ python main.py
 
 ## Controls
 
-- `W`/`A`/`S`/`D`: thrust and rotate
+- `Left` / `Right`: rotate
+- `Up` / `Down`: thrust forward / reverse
 - `Space`: fire
-- `Left Shift`: sublight warp boost (when unlocked)
+- `F`: fire missile
+- `T`: targeting computer lock
+- `W`: sublight warp boost
+- `V`: toggle cloak
 - `E`: dock/land or interact
-- `M`: open/close map overlay
+- `C`: claim nearby site
+- `M`: open map tab
+- `I`: open cargo tab
+- `S`: open status tab
+- `B`: open build tab
+- `Tab` / `Shift+Tab`: cycle pause tabs
 - `Esc`: pause
-- `Q`: quit
+- `D`: dev god mode
 
 ## Notes
 
 - This project is a script-based game prototype, not a packaged Python library.
 - Running with `python main.py` is the intended workflow.
 - World seed can be set with `ASTEROID_WORLD_SEED`.
+- `scripts/validate_map_parity.py` checks map tile routing.
+- `scripts/smoke_overlay_flow.py` runs a non-interactive overlay/input smoke check for pause, map, cargo, and status routing.
 
 Example:
 

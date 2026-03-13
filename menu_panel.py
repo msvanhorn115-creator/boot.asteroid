@@ -19,7 +19,6 @@ def draw_menu_panel(
     music_error,
     show_controls_overlay,
     show_audio_overlay,
-    show_map_overlay,
     music_muted,
     music_volume,
     sfx_muted,
@@ -38,13 +37,14 @@ def draw_menu_panel(
     pygame.draw.rect(screen, UI_COLORS["accent_alt"], accent_bar, border_radius=3)
 
     title_text = "Paused" if game_state == "paused" else "Asteroid Miner"
-    subtitle_text = "Esc resumes" if game_state == "paused" else "Select difficulty and start"
+    subtitle_text = "" if game_state == "paused" else "Select difficulty and start"
 
     title_surface = title_font.render(title_text, True, UI_COLORS["text"])
     screen.blit(title_surface, (menu_panel.centerx - title_surface.get_width() // 2, menu_panel.y + 40))
 
-    subtitle_surface = hud_font.render(subtitle_text, True, UI_COLORS["muted"])
-    screen.blit(subtitle_surface, (menu_panel.centerx - subtitle_surface.get_width() // 2, menu_panel.y + 108))
+    if subtitle_text:
+        subtitle_surface = hud_font.render(subtitle_text, True, UI_COLORS["muted"])
+        screen.blit(subtitle_surface, (menu_panel.centerx - subtitle_surface.get_width() // 2, menu_panel.y + 108))
 
     if music_loaded:
         menu_music_hint = hud_font.render("BGM active", True, UI_COLORS["ok"])
@@ -81,11 +81,12 @@ def draw_menu_panel(
             f"fire {preview.get('ai_fire_intent', 1.0):.2f}"
         ),
     ]
+    summary_y = menu_panel.y + 276
     for idx, line in enumerate(summary_lines):
         text = hud_font.render(line, True, UI_COLORS["muted"])
-        screen.blit(text, (menu_panel.x + 112, menu_panel.y + 278 + idx * 20))
+        screen.blit(text, (menu_panel.x + 112, summary_y + idx * 20))
 
-    draw_tag(screen, menu_panel.x + 112, menu_panel.y + 252, "Difficulty Profile", hud_font, tone="accent")
+    draw_tag(screen, menu_panel.x + 112, menu_panel.y + 248, "Difficulty Profile", hud_font, tone="accent")
 
     action_label = "Resume" if has_active_game else "New Game"
     draw_button(screen, menu_ui["action"], action_label, panel_font, active=True, tone="accent")
@@ -97,14 +98,12 @@ def draw_menu_panel(
     audio_label = "Hide Audio" if show_audio_overlay else "Audio"
     draw_button(screen, menu_ui["audio"], audio_label, hud_font, active=show_audio_overlay, tone="alt")
 
-    map_label = "Hide Map" if show_map_overlay else "Map"
-    draw_button(screen, menu_ui["map"], map_label, hud_font, active=show_map_overlay, tone="alt")
-    draw_button(screen, menu_ui["ship"], "Ship", hud_font, active=False, tone="alt")
-    draw_button(screen, menu_ui["build"], "Build", hud_font, active=False, tone="alt")
+    helper_text = hud_font.render("Use the top tabs or Tab / Shift+Tab to switch panels", True, UI_COLORS["muted"])
+    screen.blit(helper_text, (menu_panel.centerx - helper_text.get_width() // 2, menu_panel.y + 488))
 
     if has_active_game and game_state == "menu":
         hint = hud_font.render("You already have a run in memory.", True, UI_COLORS["muted"])
-        screen.blit(hint, (menu_panel.x + 182, menu_panel.y + 306))
+        screen.blit(hint, (menu_panel.x + 182, menu_panel.y + 360))
 
     if show_controls_overlay:
         controls_panel = pygame.Rect(menu_panel.x - 320, menu_panel.y + 20, 290, 520)
@@ -136,7 +135,8 @@ def draw_menu_panel(
                 [
                     "Esc: Pause / Resume",
                     "M: Map tab",
-                    "I: Ship tab",
+                    "I: Cargo tab",
+                    "S: Status tab",
                     "B: Build tab",
                     "E: Station dock / Planet trade",
                 ],
@@ -144,10 +144,10 @@ def draw_menu_panel(
             (
                 "Touch and Parity",
                 [
-                    "Touch FIRE/MAP/PAUSE mirror Space/M/Esc",
-                    "Touch D-pad mirrors arrow keys",
+                    "Touch MAP/PAUSE mirror M/Esc",
+                    "Build and interact buttons mirror B/E",
                     "Mouse/touch can activate station and planet buttons",
-                    "Keyboard, mouse, and touch all use same gameplay actions",
+                    "Tab / Shift+Tab cycle Pause, Map, Cargo, Status, Build",
                 ],
             ),
             (

@@ -267,25 +267,32 @@ def draw_station_panel(
     jobs = jobs or []
     if active_top == "ship":
         draw_tag(screen, content_rect.x, content_rect.y + 4, "Ship Systems", hud_font, tone="accent")
+        gold_label = f"Current gold: {int(player.credits)}"
+        gold_surface = hud_font.render(gold_label, True, UI_COLORS["accent"])
+        screen.blit(gold_surface, (content_rect.right - gold_surface.get_width(), content_rect.y + 10))
         summary_top = content_rect.y + 36
         summary_lines = [
             f"Fire L{player.fire_rate_level} | CD {player.shoot_cooldown:.2f}s",
             f"Shield L{player.shield_level} | {player.shield_layers}/{player.shield_level}",
+            f"Deflector L{player.deflector_booster_level} | {player.deflector_layers}/{player.get_deflector_capacity()}",
             f"Multishot L{player.multishot_level} | {len(player.multishot_pattern())} shots",
             f"Beam L{player.targeting_beam_level} | Computer L{player.targeting_computer_level}",
+            f"Weapon Amp L{player.weapon_amp_level} | DMG x{player.get_weapon_amp_multiplier():.2f}",
+            f"Missile L{player.missile_level} | Payload L{player.missile_payload_level}",
             (
                 f"Warp L{player.warp_drive_level} {player.warp_energy:.1f}/"
                 f"{player.get_warp_capacity_seconds():.1f}s"
             ),
             f"Scanner L{player.scanner_level}",
+            f"Ship Miners L{player.auto_mining_level} | Drones {player.get_auto_mining_drone_count()}",
             f"Missiles L{player.missile_level} | CD {player.missile_cooldown_seconds():.2f}s",
             (
                 f"Cloak L{player.cloak_level} | "
                 f"{player.cloak_timer:.1f}/{player.get_cloak_capacity_seconds():.1f}s"
             ),
         ]
-        left_summary = summary_lines[:4]
-        right_summary = summary_lines[4:]
+        left_summary = summary_lines[:5]
+        right_summary = summary_lines[5:]
         for idx, line in enumerate(left_summary):
             text = hud_font.render(line, True, UI_COLORS["muted"])
             screen.blit(text, (content_rect.x, summary_top + idx * 20))
@@ -296,10 +303,13 @@ def draw_station_panel(
         keys = [
             "buy_fire_rate",
             "buy_shield",
+            "buy_deflector",
             "buy_multishot",
+            "buy_weapon_amp",
             "buy_targeting_beam",
             "buy_targeting_computer",
             "buy_warp_drive",
+            "buy_missile_payload",
         ]
         if station_tab == "ship_utility":
             keys = [
@@ -309,9 +319,10 @@ def draw_station_panel(
                 "buy_cargo_hold",
                 "buy_accommodations",
                 "buy_engine_tuning",
+                "buy_auto_mining",
             ]
 
-        buttons_top = summary_top + 112
+        buttons_top = summary_top + 132
         for idx, key in enumerate(keys):
             col = idx % 2
             row = idx // 2
@@ -334,6 +345,9 @@ def draw_station_panel(
         elif station_tab == "station_infra":
             infra_title = panel_font.render("Infrastructure Upgrades", True, UI_COLORS["accent"])
             screen.blit(infra_title, (content_rect.x, content_rect.y + 4))
+            gold_label = f"Current gold: {int(player.credits)}"
+            gold_surface = hud_font.render(gold_label, True, UI_COLORS["accent"])
+            screen.blit(gold_surface, (content_rect.right - gold_surface.get_width(), content_rect.y + 10))
             infra_lines = [
                 f"Mining Drones L{infra_mining}",
                 f"Interceptor Drones L{infra_drone}",
@@ -357,6 +371,9 @@ def draw_station_panel(
         else:
             defense_title = panel_font.render("Station Defense", True, UI_COLORS["accent_alt"])
             screen.blit(defense_title, (content_rect.x, content_rect.y + 4))
+            gold_label = f"Current gold: {int(player.credits)}"
+            gold_surface = hud_font.render(gold_label, True, UI_COLORS["accent"])
+            screen.blit(gold_surface, (content_rect.right - gold_surface.get_width(), content_rect.y + 10))
             defense_lines = [
                 f"Station Hull L{station_level}",
                 f"Station Laser L{station_laser}",

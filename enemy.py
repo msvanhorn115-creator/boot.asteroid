@@ -300,6 +300,24 @@ class Enemy(CircleShape):
         trigger_prob = min(1.0, dt * (2.2 * self.ai_fire_intent))
         return random.random() < trigger_prob
 
+    def active_target(self, player):
+        forced_target_timer = float(getattr(self, "forced_target_timer", 0.0) or 0.0)
+        if forced_target_timer > 0.0 and hasattr(self, "forced_target_position"):
+            target_pos = pygame.Vector2(self.forced_target_position)
+            target_velocity = pygame.Vector2(getattr(self, "forced_target_velocity", (0.0, 0.0)))
+            target_radius = float(getattr(self, "forced_target_radius", 18.0))
+            return target_pos, target_velocity, target_radius, True
+
+        if player is None:
+            return None, None, 0.0, False
+
+        return (
+            pygame.Vector2(player.position),
+            pygame.Vector2(getattr(player, "velocity", (0.0, 0.0))),
+            float(getattr(player, "radius", 18.0)),
+            False,
+        )
+
     def shoot(self):
         if self.shoot_timer > 0:
             return
@@ -360,12 +378,16 @@ class SuicideBomber(Enemy):
         if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
             return
 
-        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        target_pos, target_velocity, _target_radius, force_engage = self.active_target(player)
+        if target_pos is None:
+            self.velocity = pygame.Vector2(0, 0)
+            return
+
         if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.26)
             return
 
-        delta = player.position - self.position
+        delta = target_pos - self.position
         if delta.length_squared() == 0:
             self.velocity = pygame.Vector2(0, 0)
             return
@@ -373,7 +395,7 @@ class SuicideBomber(Enemy):
         direction = delta.normalize()
         speed_scale = 0.9 + 0.22 * self.ai_aggression
         self.velocity = direction * self.scaled_speed(speed_scale)
-        self.aim_at_target(player.position, getattr(player, "velocity", None))
+        self.aim_at_target(target_pos, target_velocity)
 
     def update(self, dt, player=None):
         super().update(dt, player)
@@ -400,14 +422,21 @@ class Harasser(Enemy):
         if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
             return
 
-        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        target_pos, target_velocity, target_radius, force_engage = self.active_target(player)
+        if target_pos is None:
+            self.velocity = pygame.Vector2(0, 0)
+            return
+
         if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.3)
             return
 
-        displacement = player.position - self.position
+        displacement = target_pos - self.position
         distance = displacement.length()
-        desired_range = self.view_range * max(0.55, 0.9 - 0.14 * (self.ai_aggression - 1.0))
+        desired_range = max(
+            72.0 + target_radius * 2.6,
+            self.view_range * max(0.55, 0.9 - 0.14 * (self.ai_aggression - 1.0)),
+        )
 
         if distance == 0:
             self.velocity = pygame.Vector2(0, 0)
@@ -425,7 +454,7 @@ class Harasser(Enemy):
             strafe_push = 0.85 * self.ai_strafe
             self.velocity = (strafe * strafe_sign * strafe_push + toward * 0.16) * self.scaled_speed(0.62 + 0.16 * self.ai_aggression)
 
-        self.aim_at_target(player.position, getattr(player, "velocity", None))
+        self.aim_at_target(target_pos, target_velocity)
 
         # Fire at the player when in range
         if distance < self.view_range * (0.84 + 0.14 * self.ai_accuracy) and self.should_fire(dt):
@@ -456,14 +485,18 @@ class Tank(Enemy):
         if float(getattr(self, "entry_timer", 0.0) or 0.0) > 0.0:
             return
 
-        force_engage = float(getattr(self, "forced_target_timer", 0.0) or 0.0) > 0.0
+        target_pos, target_velocity, target_radius, force_engage = self.active_target(player)
+        if target_pos is None:
+            self.velocity = pygame.Vector2(0, 0)
+            return
+
         if not force_engage and not self.can_see_player(player):
             self.idle_patrol(dt, speed_scale=0.22)
             return
 
-        displacement = player.position - self.position
+        displacement = target_pos - self.position
         distance = displacement.length()
-        close_range = 180 * (0.9 + 0.24 * self.ai_aggression)
+        close_range = max(110.0 + target_radius * 2.4, 180 * (0.9 + 0.24 * self.ai_aggression))
 
         if distance == 0:
             self.velocity = pygame.Vector2(0, 0)
@@ -477,7 +510,7 @@ class Tank(Enemy):
             strafe = pygame.Vector2(-toward.y, toward.x)
             self.velocity = (strafe * (0.32 * self.ai_strafe) + toward * 0.12) * self.scaled_speed(0.44 + 0.1 * self.ai_aggression)
 
-        self.aim_at_target(player.position, getattr(player, "velocity", None))
+        self.aim_at_target(target_pos, target_velocity)
 
         # Fire occasionally at close range
         if distance < close_range and self.should_fire(dt):

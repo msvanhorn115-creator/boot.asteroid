@@ -219,10 +219,14 @@ def _mission_color(mission):
     return mission_colors.get(mission, "#c8c8d2")
 
 
-def get_map_cells(panel_rect, active_sector, layout=None):
+def get_map_cells(panel_rect, active_sector, scanner_target_sectors=None, ftl_target_sectors=None, layout=None):
     cells = []
     if layout is None:
         layout = _compute_map_layout(panel_rect)
+    if scanner_target_sectors is None:
+        scanner_target_sectors = set()
+    if ftl_target_sectors is None:
+        ftl_target_sectors = set()
 
     grid_origin_x = layout["grid_x"]
     grid_origin_y = layout["grid_y"]
@@ -237,13 +241,15 @@ def get_map_cells(panel_rect, active_sector, layout=None):
             y = grid_origin_y + gy * cell_size
             rect = pygame.Rect(x, y, cell_size - GRID_GAP, cell_size - GRID_GAP)
             content_rect = rect.inflate(-2, -2)
-            in_scan_range = abs(sx - current_x) <= 1 and abs(sy - current_y) <= 1
+            in_scan_range = (sx, sy) in scanner_target_sectors
+            in_ftl_range = (sx, sy) in ftl_target_sectors
             cells.append(
                 {
                     "sector": (sx, sy),
                     "rect": rect,
                     "content_rect": content_rect,
                     "in_scan_range": in_scan_range,
+                    "in_ftl_range": in_ftl_range,
                     "is_current": (sx, sy) == active_sector,
                 }
             )
@@ -252,7 +258,7 @@ def get_map_cells(panel_rect, active_sector, layout=None):
 
 def map_sector_at_point(panel_rect, active_sector, point):
     layout = _compute_map_layout(panel_rect)
-    for cell in get_map_cells(panel_rect, active_sector, layout):
+    for cell in get_map_cells(panel_rect, active_sector, layout=layout):
         if cell["rect"].collidepoint(point):
             return cell["sector"]
     return None
@@ -261,7 +267,7 @@ def map_sector_at_point(panel_rect, active_sector, point):
 def map_tile_parity_ok(panel_rect, active_sector):
     """Return True only when each map tile center resolves to its exact sector."""
     layout = _compute_map_layout(panel_rect)
-    cells = get_map_cells(panel_rect, active_sector, layout)
+    cells = get_map_cells(panel_rect, active_sector, layout=layout)
     for cell in cells:
         center = cell["rect"].center
         resolved = map_sector_at_point(panel_rect, active_sector, center)
@@ -287,6 +293,8 @@ def draw_map_panel(
     build_status_fn=None,
     raided_sectors=None,
     tactical_visible_sectors=None,
+    scanner_target_sectors=None,
+    ftl_target_sectors=None,
     show_close_button=False,
 ):
     overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
@@ -299,12 +307,16 @@ def draw_map_panel(
     screen.blit(title, (panel_rect.x + 24, panel_rect.y + 18))
     if show_close_button:
         draw_close_button(screen, pygame.Rect(panel_rect.right - 54, panel_rect.y + 16, 34, 34))
-    hint = hud_font.render("Click any highlighted sector to pulse-scan", True, UI_COLORS["muted"])
-    screen.blit(hint, (panel_rect.x + 24, panel_rect.y + 66))
     draw_tag(screen, panel_rect.x + 24, panel_rect.y + 88, "Live Sector Miniatures", hud_font, tone="accent")
 
     layout = _compute_map_layout(panel_rect)
-    cells = get_map_cells(panel_rect, active_sector, layout)
+    cells = get_map_cells(
+        panel_rect,
+        active_sector,
+        scanner_target_sectors=scanner_target_sectors,
+        ftl_target_sectors=ftl_target_sectors,
+        layout=layout,
+    )
     grid_origin_x = layout["grid_x"]
     grid_origin_y = layout["grid_y"]
     grid_w = layout["grid_w"]
@@ -359,6 +371,10 @@ def draw_map_panel(
         if cell["in_scan_range"]:
             pygame.draw.rect(screen, (79, 141, 226), rect, 1)
 
+        if cell["in_ftl_range"]:
+            inner_rect = rect.inflate(-6, -6)
+            pygame.draw.rect(screen, (250, 204, 21), inner_rect, 2)
+
         if cell["is_current"]:
             pygame.draw.rect(screen, "#22d3ee", rect, 2)
 
@@ -397,9 +413,17 @@ def draw_map_panel(
     )
     info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, cooldown_text)
 
-    range_text = _truncate_to_width("Scan Range: 3x3 around current sector", hud_font, max_info_width)
+    if scanner_level <= 0:
+        range_text = "Targeting: unavailable"
+    elif scanner_level == 1:
+        range_text = "Targeting: current sector only"
+    elif scanner_level == 2:
+        range_text = "Targeting: cardinal-adjacent sectors"
+    else:
+        range_text = "Targeting: nearby 3x3 sectors"
+    range_text = _truncate_to_width(range_text, hud_font, max_info_width)
     info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(range_text, True, UI_COLORS["muted"]))
-    pulse_size = 1 if scanner_level <= 1 else (5 if scanner_level == 2 else 9)
+    pulse_size = 0 if scanner_level <= 0 else (1 if scanner_level == 1 else (5 if scanner_level == 2 else 9))
     pulse_text = _truncate_to_width(f"Pulse Size: {pulse_size} sectors", hud_font, max_info_width)
     info_cursor_y, _ = _blit_info_line(screen, panel_rect, info_x, info_cursor_y, hud_font.render(pulse_text, True, UI_COLORS["muted"]))
 
@@ -408,6 +432,7 @@ def draw_map_panel(
         "Scanned: exact asteroids + seed-stable enemy contacts",
         "Scanned anomalies: black holes / radiation stars / nebula interference",
         "Mining platforms: yellow triangle markers",
+        "Blue border: scanner pulse target | gold frame: FTL destination",
     ]
     for line in legend_lines:
         line_text = _truncate_to_width(line, hud_font, max_info_width)

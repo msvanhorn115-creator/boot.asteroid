@@ -130,8 +130,13 @@ def draw_planet_panel(
     planet_ui["close"] = pygame.Rect(panel_rect.right - 54, panel_rect.y + 16, 34, 34)
     draw_close_button(screen, planet_ui["close"])
     owner_color = UI_COLORS["ok"] if player_controls else UI_COLORS["warn"]
-    owner_text = hud_font.render(f"Owner: {owner_label}", True, owner_color)
-    owner_x = max(panel_rect.x + 260, panel_rect.right - owner_text.get_width() - 20)
+    owner_label_text = _truncate_to_width(
+        f"Owner: {owner_label}",
+        hud_font,
+        max(120, panel_rect.width - 360),
+    )
+    owner_text = hud_font.render(owner_label_text, True, owner_color)
+    owner_x = max(panel_rect.x + 260, planet_ui["close"].x - owner_text.get_width() - 18)
     screen.blit(owner_text, (owner_x, panel_rect.y + 24))
     metal_price = metal_prices.get(planet.accepted_metal, 0)
     buys_prefix = hud_font.render("Buys:", True, UI_COLORS["ok"])
@@ -165,8 +170,6 @@ def draw_planet_panel(
         f"Unit price: {metal_price} gold",
         f"Cargo on hand: {player.metals.get(planet.accepted_metal, 0)} units",
     ]
-    if player_controls and settlement_happiness is not None:
-        market_lines.append(f"Settlement happiness: {max(0.0, float(settlement_happiness)):.2f}")
     for idx, line in enumerate(market_lines):
         screen.blit(hud_font.render(line, True, UI_COLORS["muted"]), (content_left, market_top + 28 + idx * 22))
 

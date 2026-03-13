@@ -7,6 +7,35 @@ def _vec(value):
     return pygame.Vector2(value)
 
 
+def draw_support_drones(screen, drone_specs=None, anchor_position=None):
+    anchor = _vec(anchor_position) if anchor_position is not None else None
+    for spec in drone_specs or []:
+        drone_pos = _vec(spec.get("position", anchor if anchor is not None else (0, 0)))
+        target_pos = spec.get("target")
+        drone_color = spec.get("color", (125, 211, 252))
+        if target_pos is not None:
+            target_vec = _vec(target_pos)
+            if anchor is not None:
+                pygame.draw.line(
+                    screen,
+                    (70, 96, 124),
+                    (int(anchor.x), int(anchor.y)),
+                    (int(target_vec.x), int(target_vec.y)),
+                    1,
+                )
+            pygame.draw.line(
+                screen,
+                drone_color,
+                (int(drone_pos.x), int(drone_pos.y)),
+                (int(target_vec.x), int(target_vec.y)),
+                1,
+            )
+        pygame.draw.circle(screen, (16, 24, 38), (int(drone_pos.x), int(drone_pos.y)), 5)
+        pygame.draw.circle(screen, drone_color, (int(drone_pos.x), int(drone_pos.y)), 4)
+        pygame.draw.line(screen, (233, 239, 248), (int(drone_pos.x) - 4, int(drone_pos.y)), (int(drone_pos.x) + 4, int(drone_pos.y)), 1)
+        pygame.draw.line(screen, (233, 239, 248), (int(drone_pos.x), int(drone_pos.y) - 4), (int(drone_pos.x), int(drone_pos.y) + 4), 1)
+
+
 def draw_mining_platform(screen, position, hp_ratio, linked, buffered_credits, buffered_parts, elapsed_time, drone_specs=None):
     center = _vec(position)
     cx = int(center.x)
@@ -44,30 +73,7 @@ def draw_mining_platform(screen, position, hp_ratio, linked, buffered_credits, b
         pygame.draw.circle(screen, (125, 211, 252), (cx, cargo_y), 3)
         pygame.draw.circle(screen, cargo_color, (cx + 12, cargo_y), 3)
 
-    for spec in drone_specs or []:
-        drone_pos = _vec(spec.get("position", center))
-        target_pos = spec.get("target")
-        drone_color = spec.get("color", (125, 211, 252))
-        if target_pos is not None:
-            target_vec = _vec(target_pos)
-            pygame.draw.line(
-                screen,
-                (70, 96, 124),
-                (int(center.x), int(center.y)),
-                (int(target_vec.x), int(target_vec.y)),
-                1,
-            )
-            pygame.draw.line(
-                screen,
-                drone_color,
-                (int(drone_pos.x), int(drone_pos.y)),
-                (int(target_vec.x), int(target_vec.y)),
-                1,
-            )
-        pygame.draw.circle(screen, (16, 24, 38), (int(drone_pos.x), int(drone_pos.y)), 5)
-        pygame.draw.circle(screen, drone_color, (int(drone_pos.x), int(drone_pos.y)), 4)
-        pygame.draw.line(screen, (233, 239, 248), (int(drone_pos.x) - 4, int(drone_pos.y)), (int(drone_pos.x) + 4, int(drone_pos.y)), 1)
-        pygame.draw.line(screen, (233, 239, 248), (int(drone_pos.x), int(drone_pos.y) - 4), (int(drone_pos.x), int(drone_pos.y) + 4), 1)
+    draw_support_drones(screen, drone_specs, anchor_position=center)
 
 
 def draw_station_infrastructure(

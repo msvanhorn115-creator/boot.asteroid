@@ -15,11 +15,12 @@ from station import Station
 from planet import Planet
 from sector_manager import SectorManager
 from resources import get_metal_color, get_metal_prices, set_drop_rate_multiplier
-from targeting import beam_first_hit
+from targeting import beam_first_hit, best_enemy_lock_candidate
 from upgrade_ui import UPGRADE_BUTTON_KEYS
 from station_panel import draw_station_panel, resolve_station_click
 from planet_panel import draw_planet_panel, resolve_planet_click
-from ship_panel import draw_ship_panel
+from ship_panel import draw_ship_panel, resolve_ship_click
+from status_panel import draw_status_panel
 from upgrade_actions import apply_upgrade
 from menu_panel import draw_menu_panel
 from map_panel import draw_map_panel, map_sector_at_point, map_tile_parity_ok
@@ -30,6 +31,7 @@ from buildables import (
     draw_build_placement_preview,
     draw_defense_turret,
     draw_mining_platform,
+    draw_support_drones,
     draw_station_infrastructure,
 )
 from contracts import generate_jobs
@@ -178,7 +180,7 @@ def main():
 
     pygame.init()
     try:
-        screen, selected_video_driver = init_display(SCREEN_WIDTH, SCREEN_HEIGHT)
+        window_surface, selected_video_driver = init_display(SCREEN_WIDTH, SCREEN_HEIGHT)
     except DisplayInitError as exc:
         print("Display initialization failed.")
         if exc.errors:
@@ -189,6 +191,7 @@ def main():
 
     print(f"Video driver: {selected_video_driver}")
     pygame.display.set_caption("Asteroid Miner")
+    screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT)).convert()
     clock = pygame.time.Clock()
 
     world_seed = int(os.environ.get("ASTEROID_WORLD_SEED", "1337"))
@@ -202,6 +205,62 @@ def main():
     panel_font = pygame.font.SysFont("dejavusans", 23)
     title_font = pygame.font.SysFont("freesansbold", 40)
 
+    def current_window_surface():
+        surface = pygame.display.get_surface()
+        return surface if surface is not None else window_surface
+
+    def map_window_to_logical(pos):
+        if pos is None:
+            return None
+
+        surface = current_window_surface()
+        if surface is None:
+            return (int(pos[0]), int(pos[1]))
+
+        window_width, window_height = surface.get_size()
+        if window_width <= 0 or window_height <= 0:
+            return None
+
+        scale = min(window_width / float(SCREEN_WIDTH), window_height / float(SCREEN_HEIGHT))
+        if scale <= 0:
+            return None
+
+        render_width = SCREEN_WIDTH * scale
+        render_height = SCREEN_HEIGHT * scale
+        offset_x = (window_width - render_width) * 0.5
+        offset_y = (window_height - render_height) * 0.5
+
+        local_x = (float(pos[0]) - offset_x) / scale
+        local_y = (float(pos[1]) - offset_y) / scale
+        if local_x < 0 or local_x > SCREEN_WIDTH or local_y < 0 or local_y > SCREEN_HEIGHT:
+            return None
+
+        return (int(local_x), int(local_y))
+
+    def present_frame():
+        surface = current_window_surface()
+        if surface is None:
+            return
+
+        window_width, window_height = surface.get_size()
+        if window_width == SCREEN_WIDTH and window_height == SCREEN_HEIGHT:
+            surface.blit(screen, (0, 0))
+        else:
+            scale = min(window_width / float(SCREEN_WIDTH), window_height / float(SCREEN_HEIGHT))
+            scaled_size = (
+                max(1, int(round(SCREEN_WIDTH * scale))),
+                max(1, int(round(SCREEN_HEIGHT * scale))),
+            )
+            scaled_frame = pygame.transform.smoothscale(screen, scaled_size)
+            blit_pos = (
+                (window_width - scaled_size[0]) // 2,
+                (window_height - scaled_size[1]) // 2,
+            )
+            surface.fill((0, 0, 0))
+            surface.blit(scaled_frame, blit_pos)
+
+        pygame.display.flip()
+
     def draw_hud_chip(text, x, y, color=None):
         fg = UI_COLORS["text"] if color is None else color
         label = hud_font.render(text, True, fg)
@@ -210,6 +269,88 @@ def main():
         pygame.draw.rect(screen, (58, 76, 106), bg_rect, 1, border_radius=8)
         screen.blit(label, (x + 8, y + 4))
         return bg_rect
+
+    def hud_chip_size(text):
+        width, height = hud_font.size(text)
+        return width + 16, height + 8
+
+    def truncate_hud_text(text, max_width):
+        if max_width is None:
+            return text
+        if hud_chip_size(text)[0] <= max_width:
+            return text
+
+        suffix = "..."
+        trimmed = str(text)
+        while trimmed and hud_chip_size(trimmed + suffix)[0] > max_width:
+            trimmed = trimmed[:-1]
+        return (trimmed + suffix) if trimmed else suffix
+
+    def draw_hud_chip_right(text, right_x, y, color=None):
+        width, _ = hud_chip_size(text)
+        return draw_hud_chip(text, right_x - width, y, color)
+
+    def draw_hud_stack(items, x, y, align="left", gap=6, max_width=None):
+        cursor_y = y
+        rects = []
+        for text, color in items:
+            if not text:
+                continue
+            clipped = truncate_hud_text(text, max_width)
+            if align == "right":
+                rect = draw_hud_chip_right(clipped, x, cursor_y, color)
+            else:
+                rect = draw_hud_chip(clipped, x, cursor_y, color)
+            rects.append(rect)
+            cursor_y = rect.bottom + gap
+        return rects
+
+    def draw_hud_stack_up(items, x, bottom_y, align="left", gap=6, max_width=None):
+        cursor_bottom = bottom_y
+        rects = []
+        for text, color in items:
+            if not text:
+                continue
+            clipped = truncate_hud_text(text, max_width)
+            _, height = hud_chip_size(clipped)
+            chip_y = cursor_bottom - height
+            if align == "right":
+                rect = draw_hud_chip_right(clipped, x, chip_y, color)
+            else:
+                rect = draw_hud_chip(clipped, x, chip_y, color)
+            rects.append(rect)
+            cursor_bottom = rect.y - gap
+        return rects
+
+    def wrap_text_to_width(text, font, max_width, max_lines=None):
+        words = str(text).split()
+        if not words:
+            return [""]
+
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            proposal = f"{current} {word}"
+            if font.size(proposal)[0] <= max_width:
+                current = proposal
+            else:
+                lines.append(current)
+                current = word
+
+        lines.append(current)
+        if max_lines is not None and len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines[-1] = truncate_hud_text(lines[-1], max_width)
+        return lines
+
+    def draw_wrapped_lines(text, x, y, font, color, max_width, line_gap=4, max_lines=None):
+        lines = wrap_text_to_width(text, font, max_width, max_lines=max_lines)
+        cursor_y = y
+        for line in lines:
+            surface = font.render(line, True, color)
+            screen.blit(surface, (x, cursor_y))
+            cursor_y += surface.get_height() + line_gap
+        return cursor_y
 
     dt = 0.0
     elapsed_time = 0.0
@@ -362,15 +503,14 @@ def main():
     planet_ui = {"trade": None, "undock": None}
     for idx in range(3):
         planet_ui[f"job_{idx}"] = None
-    ship_ui = {"tab_inventory": None, "tab_map": None, "close": None}
+    ship_ui = {"close": None}
+    status_ui = {"close": None}
+    pause_nav_ui = {"home": None, "map": None, "ship": None, "status": None, "build": None}
     menu_ui = {
         "action": None,
         "quit": None,
         "controls": None,
         "audio": None,
-        "map": None,
-        "ship": None,
-        "build": None,
         "music_slider": None,
         "sfx_slider": None,
         "easy": None,
@@ -395,11 +535,8 @@ def main():
         "close": None,
     }
     pause_tab = "home"
-    ship_tab = "inventory"
     build_tab = "build_construct_core"
     build_placement_mode = None
-    show_map_overlay = False
-    show_ship_overlay = False
 
     available_jobs = []
     active_contract = None
@@ -410,6 +547,7 @@ def main():
     scanner_passive_timer = 0.0
     scanner_live_window = set()
     scanner_live_timer = 0.0
+    sector_wrap_transition_timer = 0.0
     anomaly_tick_timer = 0.0
     anomaly_pressure_hint = ""
     sector_enemy_entry_grace_timer = 0.0
@@ -421,7 +559,10 @@ def main():
     defense_turrets_by_sector = {}
     platform_convoy_states = {}
     platform_harvest_progress = {}
+    ship_auto_mining_progress = {}
     station_upgrades = {}
+    station_health = {}
+    station_disabled_timers = {}
     infrastructure_health = {}
     sector_economy_states = {}
     economy_state_cache = {"version": 1, "sectors": {}}
@@ -454,21 +595,11 @@ def main():
     audio_slider_dragging = None
     show_touch_action_controls = True
     active_touch_actions = {}
-    active_touch_moves = {}
-    active_touch_points = {}
-    active_touch_move_release_at = {}
-    touch_move_release_grace_ms = 55
     touch_action_specs = {
-        "fire": {"label": "FIRE", "color": (248, 113, 113)},
-        "interact": {"label": "E", "color": (56, 189, 248)},
+        "build": {"label": "BUILD", "color": (74, 222, 128)},
+        "interact": {"label": "INTERACT", "color": (56, 189, 248)},
         "map": {"label": "MAP", "color": (250, 204, 21)},
         "pause": {"label": "||", "color": (196, 181, 253)},
-    }
-    touch_move_specs = {
-        "left": {"label": "<", "color": (56, 189, 248)},
-        "right": {"label": ">", "color": (56, 189, 248)},
-        "up": {"label": "^", "color": (52, 211, 153)},
-        "down": {"label": "v", "color": (250, 204, 21)},
     }
 
     def close_panel_rect(panel_rect):
@@ -480,23 +611,15 @@ def main():
         gap = 10
         right = SCREEN_WIDTH - 16
         bottom = SCREEN_HEIGHT - 16
-        order = ("fire", "interact", "map", "pause")
+        order = ("interact", "build", "map", "pause")
         return {
             key: pygame.Rect(right - button_w, bottom - (idx + 1) * button_h - idx * gap, button_w, button_h)
             for idx, key in enumerate(order)
         }
 
-    def build_touch_movement_buttons():
-        size = 76
-        pad = 12
-        left = 22
-        bottom = SCREEN_HEIGHT - 26
-        return {
-            "up": pygame.Rect(left + size + pad, bottom - size * 3 - pad * 2, size, size),
-            "left": pygame.Rect(left, bottom - size * 2 - pad, size, size),
-            "right": pygame.Rect(left + (size + pad) * 2, bottom - size * 2 - pad, size, size),
-            "down": pygame.Rect(left + size + pad, bottom - size, size, size),
-        }
+    def refresh_touch_action_buttons():
+        nonlocal touch_action_buttons
+        touch_action_buttons = build_touch_action_buttons()
 
     def spawn_enemy_wave(sector, faction, count=2, entry_mode="offscreen"):
         pack = get_persistent_sector_enemies(sector)
@@ -510,7 +633,6 @@ def main():
             if sector == active_sector:
                 spawn_contact_enemy(new_contact)
 
-    touch_movement_buttons = build_touch_movement_buttons()
     touch_action_buttons = build_touch_action_buttons()
     pause_button_rect = pygame.Rect(10, 10, 120, 40)
     map_panel_rect = pygame.Rect(70, 78, SCREEN_WIDTH - 140, SCREEN_HEIGHT - 156)
@@ -518,11 +640,11 @@ def main():
 
     def event_pointer_pos(evt):
         if hasattr(evt, "pos"):
-            return evt.pos
+            return map_window_to_logical(evt.pos)
         if evt.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
             surface = pygame.display.get_surface()
             width, height = surface.get_size() if surface is not None else (SCREEN_WIDTH, SCREEN_HEIGHT)
-            return (int(evt.x * width), int(evt.y * height))
+            return map_window_to_logical((int(evt.x * width), int(evt.y * height)))
         return None
 
     def event_pointer_id(evt):
@@ -540,60 +662,14 @@ def main():
                 return key
         return None
 
-    def touch_move_at_pos(pos, buttons, margin=0):
-        if pos is None:
-            return None
-        candidates = []
-        for key, rect in buttons.items():
-            test_rect = rect.inflate(margin * 2, margin * 2) if margin > 0 else rect
-            if test_rect.collidepoint(pos):
-                center = pygame.Vector2(rect.centerx, rect.centery)
-                dist2 = (center - pygame.Vector2(pos)).length_squared()
-                candidates.append((dist2, key))
-        if candidates:
-            candidates.sort(key=lambda item: item[0])
-            return candidates[0][1]
-        return None
-
-    def touch_move_with_hysteresis(pointer_id, pos, buttons):
-        current = active_touch_moves.get(pointer_id)
-        if current in buttons and buttons[current].inflate(88, 88).collidepoint(pos):
-            return current
-        return touch_move_at_pos(pos, buttons, margin=26)
-
-    def latch_touch_move(pointer_id, move_key):
-        if pointer_id is None or move_key is None:
-            return
-        active_touch_moves[pointer_id] = move_key
-        active_touch_move_release_at.pop(pointer_id, None)
-
-    def schedule_touch_move_release(pointer_id):
-        if pointer_id in active_touch_moves:
-            active_touch_move_release_at[pointer_id] = pygame.time.get_ticks() + touch_move_release_grace_ms
-
-    def clear_expired_touch_moves(now_ms):
-        for pointer_id, release_at in list(active_touch_move_release_at.items()):
-            if now_ms >= release_at:
-                active_touch_move_release_at.pop(pointer_id, None)
-                active_touch_moves.pop(pointer_id, None)
-
     def draw_touch_action_buttons(target, buttons):
+        active_actions = {action for action in active_touch_actions.values() if action is not None}
         for key, rect in buttons.items():
             spec = touch_action_specs[key]
             tone = spec["color"]
-            pygame.draw.rect(target, (12, 18, 32, 185), rect, border_radius=12)
+            fill = (26, 46, 72, 220) if key in active_actions else (12, 18, 32, 185)
+            pygame.draw.rect(target, fill, rect, border_radius=12)
             pygame.draw.rect(target, tone, rect, 2, border_radius=12)
-            label = hud_font.render(spec["label"], True, tone)
-            target.blit(label, label.get_rect(center=rect.center))
-
-    def draw_touch_movement_buttons(target, buttons):
-        active_moves = {move for move in active_touch_moves.values() if move is not None}
-        for key, rect in buttons.items():
-            spec = touch_move_specs[key]
-            tone = spec["color"]
-            fill = (26, 46, 72, 220) if key in active_moves else (12, 18, 32, 185)
-            pygame.draw.rect(target, fill, rect, border_radius=14)
-            pygame.draw.rect(target, tone, rect, 2, border_radius=14)
             label = hud_font.render(spec["label"], True, tone)
             target.blit(label, label.get_rect(center=rect.center))
 
@@ -614,13 +690,11 @@ def main():
         return True
 
     def open_pause_tab(tab_name):
-        nonlocal game_state, is_docked, docked_context, docked_planet, pause_tab, ship_tab, build_tab, build_placement_mode
+        nonlocal game_state, is_docked, docked_context, docked_planet, pause_tab, build_tab, build_placement_mode
         if not has_active_game:
             return
         pause_tab = tab_name
-        if tab_name == "ship":
-            ship_tab = "inventory"
-        elif tab_name == "build":
+        if tab_name == "build":
             build_tab = "build_construct_core"
         else:
             build_placement_mode = None
@@ -639,22 +713,64 @@ def main():
         menu_ui["easy"] = pygame.Rect(diff_left, diff_y, diff_w, diff_h)
         menu_ui["normal"] = pygame.Rect(diff_left + diff_w + diff_gap, diff_y, diff_w, diff_h)
         menu_ui["hard"] = pygame.Rect(diff_left + (diff_w + diff_gap) * 2, diff_y, diff_w, diff_h)
-        menu_ui["action"] = pygame.Rect(menu_panel.x + 110, menu_panel.y + 332, 220, 44)
-        menu_ui["quit"] = pygame.Rect(menu_panel.right - 330, menu_panel.y + 332, 220, 44)
+        menu_ui["action"] = pygame.Rect(menu_panel.x + 110, menu_panel.y + 388, 220, 44)
+        menu_ui["quit"] = pygame.Rect(menu_panel.right - 330, menu_panel.y + 388, 220, 44)
         small_w = 108
         small_h = 34
         small_gap = 10
-        row_y = menu_panel.y + 394
+        row_y = menu_panel.y + 446
         row_left = menu_panel.x + 56
         menu_ui["controls"] = pygame.Rect(row_left, row_y, small_w, small_h)
         menu_ui["audio"] = pygame.Rect(row_left + (small_w + small_gap), row_y, small_w, small_h)
-        menu_ui["map"] = pygame.Rect(row_left + (small_w + small_gap) * 2, row_y, small_w, small_h)
-        menu_ui["ship"] = pygame.Rect(row_left + (small_w + small_gap) * 3, row_y, small_w, small_h)
-        menu_ui["build"] = pygame.Rect(row_left + (small_w + small_gap) * 4, row_y, small_w, small_h)
         audio_panel = pygame.Rect(menu_panel.right + 16, menu_panel.y + 56, 280, 230)
         menu_ui["music_slider"] = pygame.Rect(audio_panel.x + 16, audio_panel.y + 72, audio_panel.width - 32, 16)
         menu_ui["sfx_slider"] = pygame.Rect(audio_panel.x + 16, audio_panel.y + 166, audio_panel.width - 32, 16)
         menu_ui["close"] = pygame.Rect(menu_panel.right - 54, menu_panel.y + 16, 34, 34)
+
+    def build_pause_nav_layout():
+        tab_w = 132
+        tab_h = 36
+        tab_gap = 10
+        total_w = tab_w * 5 + tab_gap * 4
+        left = SCREEN_WIDTH // 2 - total_w // 2
+        top = 18
+        for idx, key in enumerate(("home", "map", "ship", "status", "build")):
+            pause_nav_ui[key] = pygame.Rect(left + idx * (tab_w + tab_gap), top, tab_w, tab_h)
+
+    def pause_nav_active_tab():
+        return pause_tab if pause_tab in ("home", "map", "ship", "status", "build") else "home"
+
+    def cycle_pause_tab(step):
+        nonlocal pause_tab
+        if not has_active_game:
+            return False
+        ordered = ["home", "map", "ship", "status", "build"]
+        current = pause_nav_active_tab()
+        idx = ordered.index(current)
+        open_pause_tab(ordered[(idx + step) % len(ordered)])
+        play_sfx("ui_click")
+        return True
+
+    def draw_pause_navigation():
+        if not has_active_game or game_state not in ("menu", "paused"):
+            return
+        build_pause_nav_layout()
+        nav_rect = pygame.Rect(pause_nav_ui["home"].x - 16, 10, (pause_nav_ui["build"].right - pause_nav_ui["home"].x) + 32, 52)
+        pygame.draw.rect(screen, (8, 14, 26, 212), nav_rect, border_radius=14)
+        pygame.draw.rect(screen, (88, 102, 134), nav_rect, 1, border_radius=14)
+        labels = {
+            "home": "Pause",
+            "map": "Map",
+            "ship": "Inventory",
+            "status": "Status",
+            "build": "Build",
+        }
+        active_key = pause_nav_active_tab()
+        for key, label in labels.items():
+            draw_button(screen, pause_nav_ui[key], label, hud_font, active=(active_key == key), tone="alt" if key != active_key else "accent")
+
+    def menu_panel_active():
+        return game_state == "menu" or (game_state == "paused" and pause_tab in ("home", "controls", "audio"))
 
     def build_panel_rect():
         build_margin_x = max(140, SCREEN_WIDTH // 10)
@@ -662,14 +778,10 @@ def main():
         return pygame.Rect(build_margin_x, build_margin_y, SCREEN_WIDTH - build_margin_x * 2, SCREEN_HEIGHT - build_margin_y * 2)
 
     def close_pause_overlay():
-        nonlocal game_state, pause_tab, ship_tab
+        nonlocal game_state, pause_tab
         if build_placement_mode is not None:
             return cancel_build_placement("Placement canceled")
-        if pause_tab == "ship" and ship_tab == "map":
-            ship_tab = "inventory"
-            play_sfx("ui_click")
-            return True
-        if pause_tab in ("controls", "audio", "map", "ship", "build"):
+        if pause_tab in ("controls", "audio", "map", "ship", "status", "build"):
             pause_tab = "home"
             play_sfx("ui_click")
             return True
@@ -704,6 +816,8 @@ def main():
 
     def handle_menu_click(pos):
         nonlocal selected_difficulty, game_state, pause_tab, audio_slider_dragging
+        if not menu_panel_active():
+            return False
         build_menu_ui_layout()
         if menu_ui.get("close") and menu_ui["close"].collidepoint(pos):
             return close_pause_overlay()
@@ -725,12 +839,9 @@ def main():
             return True
         if menu_ui["quit"] and menu_ui["quit"].collidepoint(pos):
             shutdown_game(0)
-        for key, target_tab in {"controls": "controls", "audio": "audio", "map": "map", "ship": "ship", "build": "build"}.items():
+        for key, target_tab in {"controls": "controls", "audio": "audio"}.items():
             rect = menu_ui.get(key)
             if rect is not None and rect.collidepoint(pos):
-                if key in ("ship", "build", "map") and not has_active_game:
-                    play_sfx("ui_click")
-                    return True
                 pause_tab = "home" if pause_tab == target_tab else target_tab
                 if game_state == "playing":
                     game_state = "paused"
@@ -885,27 +996,53 @@ def main():
             return True
         return False
 
+    def handle_ship_panel_action(action):
+        nonlocal active_contract, station_message, station_message_timer
+        if action is None:
+            return False
+        if action == "close":
+            return close_pause_overlay()
+        if action == "drop_contract":
+            if active_contract is None:
+                return False
+            unit = active_contract.get("unit", "cargo")
+            amount = int(active_contract.get("amount", 0))
+            active_contract = None
+            station_message = (
+                f"Spaced {amount} {unit}" if unit in ("passenger", "team") else f"Dumped contract cargo ({amount} {unit})"
+            )
+            station_message_timer = 1.6
+            play_sfx("ui_click")
+            log_event("contract_abandoned", unit=unit, amount=amount)
+            return True
+        if action.startswith("drop_metal:"):
+            metal_type = action.split(":", 1)[1]
+            amount = int(player.metals.get(metal_type, 0)) if player is not None else 0
+            if player is None or amount <= 0:
+                return False
+            player.metals[metal_type] = 0
+            station_message = f"Jettisoned {amount} {metal_type}"
+            station_message_timer = 1.4
+            play_sfx("ui_click")
+            log_event("cargo_jettisoned", metal=metal_type, amount=amount)
+            return True
+        return False
+
     def sync_virtual_controls():
         if player is None:
             return
-        active_moves = {move for move in active_touch_moves.values() if move is not None}
-        active_actions = {action for action in active_touch_actions.values() if action is not None}
         player.set_virtual_controls(
-            left=("left" in active_moves),
-            right=("right" in active_moves),
-            up=("up" in active_moves),
-            down=("down" in active_moves),
-            fire=("fire" in active_actions),
+            left=False,
+            right=False,
+            up=False,
+            down=False,
+            fire=False,
         )
 
     def lower_left_hud_anchor():
-        if show_touch_action_controls and not is_docked:
-            return max(rect.right for rect in touch_movement_buttons.values()) + 18
         return 10
 
     def lower_left_message_y():
-        if show_touch_action_controls and not is_docked:
-            return min(rect.top for rect in touch_movement_buttons.values()) - 38
         return SCREEN_HEIGHT - 88
 
     def handle_scanner_action(target_sector=None):
@@ -921,8 +1058,8 @@ def main():
             return True
         dx = target_sector[0] - active_sector[0]
         dy = target_sector[1] - active_sector[1]
-        if target_sector != active_sector and (abs(dx) > 1 or abs(dy) > 1):
-            station_message = "Scanner can only remote-scan adjacent sectors"
+        if (dx, dy) not in scanner_pulse_offsets(player.scanner_level):
+            station_message = "Select a highlighted map sector"
             station_message_timer = 1.5
             play_sfx("ui_click")
             return True
@@ -970,6 +1107,10 @@ def main():
                 player.cargo_hold_level,
                 player.accommodations_level,
                 player.engine_tuning_level,
+                player.weapon_amp_level,
+                player.deflector_booster_level,
+                player.missile_payload_level,
+                player.auto_mining_level,
             ))
             for buy_upgrade_fn in (
                 player.buy_fire_rate_upgrade,
@@ -984,6 +1125,10 @@ def main():
                 player.buy_cargo_hold_upgrade,
                 player.buy_accommodations_upgrade,
                 player.buy_engine_tuning_upgrade,
+                player.buy_weapon_amp_upgrade,
+                player.buy_deflector_upgrade,
+                player.buy_missile_payload_upgrade,
+                player.buy_auto_mining_upgrade,
             ):
                 while buy_upgrade_fn()[0]:
                     pass
@@ -1000,6 +1145,10 @@ def main():
                 player.cargo_hold_level,
                 player.accommodations_level,
                 player.engine_tuning_level,
+                player.weapon_amp_level,
+                player.deflector_booster_level,
+                player.missile_payload_level,
+                player.auto_mining_level,
             ))
             upgrades_granted = max(0, after_total - before_total)
             player.refill_shields()
@@ -1033,6 +1182,9 @@ def main():
                 start_or_resume_game()
                 play_sfx("pause")
             return True
+        if event.key == pygame.K_TAB and has_active_game and game_state in ("menu", "paused"):
+            backwards = bool(event.mod & pygame.KMOD_SHIFT)
+            return cycle_pause_tab(-1 if backwards else 1)
         if event.key == pygame.K_d:
             return toggle_dev_mode()
         if game_state in ("menu", "paused"):
@@ -1053,6 +1205,9 @@ def main():
                 return True
             if event.key == pygame.K_i and has_active_game:
                 open_pause_tab("ship")
+                return True
+            if event.key == pygame.K_s and has_active_game:
+                open_pause_tab("status")
                 return True
             if event.key == pygame.K_b and has_active_game:
                 open_pause_tab("build")
@@ -1085,14 +1240,16 @@ def main():
                 station_message_timer = 1.2
                 play_sfx("ui_click")
             return True
-        if event.key == pygame.K_s:
-            return handle_scanner_action(active_sector)
         if event.key == pygame.K_m:
             open_pause_tab("map")
             play_sfx("pause")
             return True
         if event.key == pygame.K_i:
             open_pause_tab("ship")
+            play_sfx("pause")
+            return True
+        if event.key == pygame.K_s:
+            open_pause_tab("status")
             play_sfx("pause")
             return True
         if event.key == pygame.K_b:
@@ -1102,7 +1259,8 @@ def main():
         return False
 
     def handle_pointer_down(event):
-        nonlocal audio_slider_dragging, game_state, pause_tab, ship_tab, build_tab
+        nonlocal audio_slider_dragging, game_state, pause_tab, build_tab
+        refresh_touch_action_buttons()
         pos = event_pointer_pos(event)
         pointer_id = event_pointer_id(event)
         if pos is None:
@@ -1113,6 +1271,13 @@ def main():
             play_sfx("ui_click")
             return True
         if game_state in ("menu", "paused") and has_active_game:
+            build_pause_nav_layout()
+            for key in ("home", "map", "ship", "status", "build"):
+                rect = pause_nav_ui.get(key)
+                if rect is not None and rect.collidepoint(pos):
+                    open_pause_tab(key)
+                    play_sfx("ui_click")
+                    return True
             if pause_tab == "build":
                 if build_placement_mode is not None:
                     cancel_rect = build_ui.get("placement_cancel")
@@ -1156,25 +1321,23 @@ def main():
                             play_sfx("ui_click")
                         return True
             if pause_tab == "ship":
-                if ship_ui.get("close") and ship_ui["close"].collidepoint(pos):
+                return handle_ship_panel_action(resolve_ship_click(pos, ship_ui))
+            if pause_tab == "status":
+                if status_ui.get("close") and status_ui["close"].collidepoint(pos):
                     return close_pause_overlay()
-                if ship_ui.get("tab_inventory") and ship_ui["tab_inventory"].collidepoint(pos):
-                    ship_tab = "inventory"
-                    play_sfx("ui_click")
-                    return True
-                if ship_ui.get("tab_map") and ship_ui["tab_map"].collidepoint(pos):
-                    ship_tab = "map"
-                    play_sfx("ui_click")
-                    return True
             if pause_tab == "map" and close_panel_rect(map_panel_rect).collidepoint(pos):
                 return close_pause_overlay()
-        if game_state in ("menu", "paused") and handle_menu_click(pos):
+        if menu_panel_active() and handle_menu_click(pos):
             return True
-        if game_state in ("menu", "paused") and has_active_game and (pause_tab == "map" or (pause_tab == "ship" and ship_tab == "map")):
+        if game_state in ("menu", "paused") and has_active_game and pause_tab == "map":
             if map_tile_parity_ok(map_panel_rect, active_sector):
                 sector = map_sector_at_point(map_panel_rect, active_sector, pos)
                 if sector is not None:
-                    return handle_scanner_action(sector)
+                    ftl_targets = owned_ftl_target_sectors(active_sector, player.warp_drive_level if player else 0)
+                    if sector in ftl_targets:
+                        return handle_ftl_jump_action(sector)
+                    if sector in scanner_target_sectors(active_sector, player.scanner_level if player else 0):
+                        return handle_scanner_action(sector)
         if game_state == "playing" and is_docked:
             if docked_context == "station":
                 return handle_station_panel_action(resolve_station_click(pos, station_tab, station_ui))
@@ -1190,16 +1353,12 @@ def main():
                 active_touch_actions[pointer_id] = action
                 if action == "map":
                     open_pause_tab("map")
+                elif action == "build":
+                    open_pause_tab("build")
                 elif action == "pause":
                     open_pause_tab("home")
                 elif action == "interact":
                     handle_interact_action()
-                sync_virtual_controls()
-                return True
-            move = touch_move_with_hysteresis(pointer_id, pos, touch_movement_buttons)
-            if move is not None:
-                active_touch_points[pointer_id] = pos
-                latch_touch_move(pointer_id, move)
                 sync_virtual_controls()
                 return True
         return False
@@ -1209,29 +1368,34 @@ def main():
         pointer_id = event_pointer_id(event)
         if pos is None:
             return False
+        refresh_touch_action_buttons()
         if audio_slider_dragging is not None:
             set_audio_slider_value(audio_slider_dragging, pos[0])
             return True
-        if pointer_id in active_touch_points:
-            active_touch_points[pointer_id] = pos
-            move = touch_move_with_hysteresis(pointer_id, pos, touch_movement_buttons)
-            if move is not None:
-                latch_touch_move(pointer_id, move)
-            sync_virtual_controls()
-            return True
+        if pointer_id in active_touch_actions:
+            if active_touch_actions.get(pointer_id) is not None:
+                return True
         return False
 
     def handle_pointer_up(event):
         nonlocal audio_slider_dragging
+        refresh_touch_action_buttons()
         pointer_id = event_pointer_id(event)
         audio_slider_dragging = None
-        active_touch_points.pop(pointer_id, None)
         active_touch_actions.pop(pointer_id, None)
-        schedule_touch_move_release(pointer_id)
         sync_virtual_controls()
         return False
 
     def handle_event(event):
+        nonlocal window_surface
+        if event.type == pygame.VIDEORESIZE:
+            window_surface = pygame.display.set_mode((max(640, event.w), max(360, event.h)), pygame.RESIZABLE)
+            return True
+        if event.type == pygame.WINDOWSIZECHANGED:
+            surface = pygame.display.get_surface()
+            if surface is not None:
+                window_surface = surface
+            return False
         if event.type == pygame.KEYDOWN:
             return handle_keydown(event)
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
@@ -1390,6 +1554,10 @@ def main():
             + player.cargo_hold_level
             + player.accommodations_level
             + player.engine_tuning_level
+            + player.weapon_amp_level
+            + player.deflector_booster_level
+            + player.missile_payload_level
+            + player.auto_mining_level
         )
 
         economic_band = min(18.0, float(player.credits) / 1200.0)
@@ -1729,6 +1897,118 @@ def main():
             "infra_shield": pygame.Vector2(44, 36),
         }.get(kind, pygame.Vector2(0, 0))
 
+    def station_max_health(station_id):
+        st = get_station_upgrade_state(station_id)
+        level = int(st.get("level", 1))
+        shield = int(st.get("infra_shield", 0))
+        return 120.0 + level * 42.0 + shield * 26.0
+
+    def ensure_station_health(station_id):
+        max_hp = station_max_health(station_id)
+        hp = station_health.get(station_id)
+        if hp is None:
+            station_health[station_id] = max_hp
+            return max_hp
+        station_health[station_id] = min(max_hp, float(hp))
+        return station_health[station_id]
+
+    def station_disabled_timer(station_id):
+        return max(0.0, float(station_disabled_timers.get(station_id, 0.0)))
+
+    def station_is_disabled(station_id):
+        return station_disabled_timer(station_id) > 0.0
+
+    def active_sector_station_targets():
+        targets = []
+        for station in list(stations) if stations is not None else []:
+            sid = getattr(station, "station_id", "")
+            if parse_station_sector(sid) != active_sector:
+                continue
+            if station_owner(sid) != "player":
+                continue
+            if station_is_disabled(sid):
+                continue
+            hp = ensure_station_health(sid)
+            if hp <= 0.0:
+                continue
+            targets.append(
+                {
+                    "station_id": sid,
+                    "position": pygame.Vector2(station.position),
+                    "radius": float(getattr(station, "radius", STATION_RADIUS)),
+                    "hp": hp,
+                    "max_hp": station_max_health(sid),
+                    "level": station_level(sid),
+                }
+            )
+        return targets
+
+    def active_sector_station_statuses():
+        statuses = []
+        for station in list(stations) if stations is not None else []:
+            sid = getattr(station, "station_id", "")
+            if parse_station_sector(sid) != active_sector:
+                continue
+            if station_owner(sid) != "player":
+                continue
+            max_hp = station_max_health(sid)
+            hp = ensure_station_health(sid)
+            disabled_timer = station_disabled_timer(sid)
+            statuses.append(
+                {
+                    "station_id": sid,
+                    "position": pygame.Vector2(station.position),
+                    "radius": float(getattr(station, "radius", STATION_RADIUS)),
+                    "hp": hp,
+                    "max_hp": max_hp,
+                    "hp_ratio": 0.0 if max_hp <= 0 else max(0.0, min(1.0, hp / max_hp)),
+                    "disabled_timer": disabled_timer,
+                    "disabled": disabled_timer > 0.0,
+                }
+            )
+        return statuses
+
+    def draw_station_status_overlays(target, station_statuses):
+        if not station_statuses:
+            return
+
+        for status in station_statuses:
+            hp_ratio = float(status.get("hp_ratio", 1.0))
+            disabled = bool(status.get("disabled", False))
+            if not disabled and hp_ratio >= 0.995 and active_sector not in raid_events:
+                continue
+
+            pos = pygame.Vector2(status["position"])
+            radius = float(status.get("radius", STATION_RADIUS))
+            bar_w = 80
+            bar_h = 8
+            bar_x = int(pos.x - bar_w * 0.5)
+            bar_y = int(pos.y - radius - 24)
+            label_y = bar_y - 18
+
+            if disabled:
+                label_text = f"DISABLED {status['disabled_timer']:.0f}s"
+                label_color = UI_COLORS["danger"]
+                fill_color = (239, 68, 68)
+            else:
+                label_text = f"HULL {int(round(hp_ratio * 100))}%"
+                label_color = UI_COLORS["warn"] if hp_ratio < 0.55 else UI_COLORS["muted"]
+                fill_color = (250, 204, 21) if hp_ratio < 0.55 else (96, 165, 250)
+
+            label_surface = hud_font.render(label_text, True, label_color)
+            label_rect = label_surface.get_rect(center=(int(pos.x), label_y + label_surface.get_height() // 2))
+            label_bg = label_rect.inflate(10, 4)
+            pygame.draw.rect(target, (9, 16, 29, 208), label_bg, border_radius=6)
+            pygame.draw.rect(target, label_color, label_bg, 1, border_radius=6)
+            target.blit(label_surface, label_rect)
+
+            bar_rect = pygame.Rect(bar_x, bar_y, bar_w, bar_h)
+            pygame.draw.rect(target, (9, 16, 29), bar_rect, border_radius=4)
+            pygame.draw.rect(target, (88, 102, 134), bar_rect, 1, border_radius=4)
+            fill_w = int((bar_w - 2) * hp_ratio)
+            if fill_w > 0:
+                pygame.draw.rect(target, fill_color, pygame.Rect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2), border_radius=3)
+
     def active_sector_infrastructure_targets():
         targets = []
         for station in list(stations) if stations is not None else []:
@@ -1770,6 +2050,21 @@ def main():
         infrastructure_health[key] = max(0.0, current_hp - effective)
         return infrastructure_health[key] <= 0.0
 
+    def apply_station_damage(target, base_damage):
+        sid = target.get("station_id", "")
+        if not sid:
+            return False
+        current_hp = ensure_station_health(sid)
+        shield_level = station_infra_level(sid, "infra_shield")
+        effective = max(0.25, float(base_damage) * max(0.45, 1.0 - shield_level * 0.1))
+        remaining = max(0.0, current_hp - effective)
+        station_health[sid] = remaining
+        if remaining > 0.0:
+            return False
+        station_disabled_timers[sid] = max(station_disabled_timer(sid), 18.0)
+        station_health[sid] = max(18.0, station_max_health(sid) * 0.22)
+        return True
+
     def repair_infrastructure_from_shields(dt_seconds):
         for station in list(stations) if stations is not None else []:
             sid = getattr(station, "station_id", "")
@@ -1787,6 +2082,23 @@ def main():
                 current_hp = ensure_infrastructure_health(sid, kind)
                 regen_rate = (0.22 + shield_lvl * 0.18 + infra_lvl * 0.05) * dt_seconds
                 infrastructure_health[key] = min(max_hp, float(current_hp) + regen_rate)
+
+    def repair_station_combat_state(dt_seconds):
+        for station in list(stations) if stations is not None else []:
+            sid = getattr(station, "station_id", "")
+            if parse_station_sector(sid) != active_sector or station_owner(sid) != "player":
+                continue
+            max_hp = station_max_health(sid)
+            current_hp = ensure_station_health(sid)
+            shield_lvl = station_infra_level(sid, "infra_shield")
+            regen_rate = (0.32 + station_level(sid) * 0.1 + shield_lvl * 0.22) * dt_seconds
+            disable_timer = station_disabled_timer(sid)
+            if disable_timer > 0.0:
+                station_disabled_timers[sid] = max(0.0, disable_timer - dt_seconds)
+                regen_cap = max_hp * (0.42 if station_disabled_timer(sid) > 0.0 else 0.68)
+                station_health[sid] = min(regen_cap, current_hp + regen_rate * 0.75)
+            else:
+                station_health[sid] = min(max_hp, current_hp + regen_rate)
 
     def try_drone_intercept_hostile_shot(shot):
         nonlocal drone_intercept_cooldown
@@ -1916,6 +2228,48 @@ def main():
         if player is None or player.credits < BUILD_STATION_COST:
             return (f"Build: need {BUILD_STATION_COST} gold (press B)", "#fca5a5")
         return (f"Build Station: press B ({BUILD_STATION_COST}g)", "#86efac")
+
+    def ftl_jump_range(level):
+        staged = [0, 2, 3, 4, 6]
+        idx = max(0, min(len(staged) - 1, int(level or 0)))
+        return staged[idx]
+
+    def owned_ftl_target_sectors(center_sector, warp_level):
+        jump_range = ftl_jump_range(warp_level)
+        if jump_range <= 0:
+            return set()
+
+        reachable = set()
+        cx, cy = center_sector
+        for sy in range(cy - jump_range, cy + jump_range + 1):
+            for sx in range(cx - jump_range, cx + jump_range + 1):
+                sector = (sx, sy)
+                if sector == center_sector:
+                    continue
+                if max(abs(sx - cx), abs(sy - cy)) > jump_range:
+                    continue
+                if sector_owner(sector) == "player":
+                    reachable.add(sector)
+        return reachable
+
+    def map_action_status_for_sector(sector):
+        if sector == active_sector:
+            return ("Current sector", UI_COLORS["muted"])
+
+        ftl_targets = owned_ftl_target_sectors(active_sector, player.warp_drive_level if player else 0)
+        if sector in ftl_targets:
+            return (f"FTL jump ready: click to warp to {sector[0]},{sector[1]}", "#fcd34d")
+
+        if sector_owner(sector) == "player" and player is not None and player.warp_drive_level > 0:
+            return (
+                f"Owned sector out of FTL range ({ftl_jump_range(player.warp_drive_level)} tiles)",
+                UI_COLORS["warn"],
+            )
+
+        if sector in scanner_target_sectors(active_sector, player.scanner_level if player else 0):
+            return (f"Scanner: click to pulse sector {sector[0]},{sector[1]}", "#93c5fd")
+
+        return build_status_for_sector(sector)
 
     def sector_security_rating(sector):
         # Security infrastructure is intentionally simple: station defenses and
@@ -2275,7 +2629,7 @@ def main():
         }
 
     def scanner_cooldown_for_level(level):
-        # L0 no remote scan, L1-L4 progressively faster scans.
+        # L0 unavailable, L1-L4 progressively faster scan cadence.
         return [999.0, 10.0, 7.0, 5.0, 3.5][max(0, min(4, int(level)))]
 
     def _stable_text_seed(text):
@@ -2525,6 +2879,12 @@ def main():
             for dx in (-1, 0, 1)
         ]
 
+    def scanner_target_sectors(center_sector, level):
+        return {
+            (center_sector[0] + dx, center_sector[1] + dy)
+            for dx, dy in scanner_pulse_offsets(level)
+        }
+
     def scanner_anomalies_for_sector(sector):
         sx, sy = sector
         rng = random.Random(
@@ -2766,18 +3126,20 @@ def main():
 
         scanned = 0
         if center_sector == active_sector:
-            offsets = scanner_pulse_offsets(player.scanner_level)
+            sectors_to_scan = [
+                (center_sector[0] + dx, center_sector[1] + dy)
+                for dx, dy in scanner_pulse_offsets(player.scanner_level)
+            ]
         else:
             dx = center_sector[0] - active_sector[0]
             dy = center_sector[1] - active_sector[1]
             if abs(dx) > 1 or abs(dy) > 1:
                 return 0
-            # Remote scan only reveals the selected adjacent sector.
-            offsets = [(dx, dy)]
+            # Remote scan only reveals the exact selected sector.
+            sectors_to_scan = [center_sector]
 
         scanned_sectors = set()
-        for dx, dy in offsets:
-            sector = (center_sector[0] + dx, center_sector[1] + dy)
+        for sector in sectors_to_scan:
             if scan_sector(sector):
                 scanned += 1
                 scanned_sectors.add(sector)
@@ -2902,7 +3264,7 @@ def main():
         nonlocal targeting_locked_targets, targeting_mode_timer
         nonlocal station_sprites_by_id, planet_sprites_by_id, world_offset, active_sector
         nonlocal destroyed_seed_asteroids
-        nonlocal available_jobs, active_contract, explored_sectors, show_map_overlay, show_ship_overlay, ship_tab, build_tab
+        nonlocal available_jobs, active_contract, explored_sectors, build_tab
         nonlocal live_sector_intel, persistent_sector_enemies, scanner_cooldown_timer, scanner_passive_timer
         nonlocal scanner_live_window, scanner_live_timer
         nonlocal anomaly_tick_timer, anomaly_pressure_hint
@@ -2910,10 +3272,10 @@ def main():
         nonlocal current_enemy_spawn_interval, current_enemy_max_alive
         nonlocal sector_enemy_entry_grace_timer
         nonlocal sector_owner_overrides, station_owner_overrides, planet_owner_overrides
-        nonlocal built_stations_by_sector, mining_platforms_by_sector, defense_turrets_by_sector, platform_convoy_states, platform_harvest_progress
+        nonlocal built_stations_by_sector, mining_platforms_by_sector, defense_turrets_by_sector, platform_convoy_states, platform_harvest_progress, ship_auto_mining_progress
         nonlocal raid_events, raid_spawn_timer
         nonlocal home_station_id, home_planet_id
-        nonlocal station_upgrades, station_defense_fire_timer, enemy_station_fire_timer
+        nonlocal station_upgrades, station_health, station_disabled_timers, station_defense_fire_timer, enemy_station_fire_timer
         nonlocal infrastructure_health, infrastructure_defense_fire_timer, passive_drone_income_timer, drone_intercept_cooldown
         nonlocal platform_logistics_hint_timer
         nonlocal sector_economy_states, economy_state_cache
@@ -2960,6 +3322,7 @@ def main():
         station_sprites_by_id = {}
         planet_sprites_by_id = {}
         destroyed_seed_asteroids = set()
+        ship_auto_mining_progress = {}
         world_offset = pygame.Vector2(0, 0)
         active_sector = (0, 0)
         sync_station_sectors(force=True)
@@ -2999,6 +3362,8 @@ def main():
         platform_convoy_states = {}
         platform_harvest_progress = {}
         station_upgrades = {}
+        station_health = {}
+        station_disabled_timers = {}
         infrastructure_health = {}
         sector_economy_states = {}
         economy_state_cache = {"version": 1, "sectors": {}}
@@ -3057,9 +3422,6 @@ def main():
         refresh_owned_sector_economy_states()
         load_economy_state_cache()
         snapshot_economy_state_cache()
-        show_map_overlay = False
-        show_ship_overlay = False
-        ship_tab = "inventory"
         build_tab = "build_construct_core"
         load_active_sector_enemies(reset_grace=True)
         capture_sector_snapshot(active_sector[0], active_sector[1], visited=True, charted=True)
@@ -3073,13 +3435,92 @@ def main():
         live_enemies.sort(key=lambda enemy: player.position.distance_to(enemy.position))
         return live_enemies[:max_locks]
 
+    def acquire_player_missile_target(shot):
+        if shot is None or enemies is None:
+            return None
+
+        existing_target = getattr(shot, "guided_target", None)
+        if existing_target is not None and existing_target.alive():
+            return existing_target
+
+        live_enemies = [enemy for enemy in list(enemies) if enemy.alive()]
+        if not live_enemies:
+            shot.guided_target = None
+            return None
+
+        locked_target = None
+        for candidate in targeting_locked_targets:
+            if candidate is not None and candidate.alive():
+                locked_target = candidate
+                break
+        if locked_target is not None:
+            shot.guided_target = locked_target
+            return locked_target
+
+        if shot.velocity.length_squared() > 1e-6:
+            travel_direction = shot.velocity.normalize()
+        elif player is not None:
+            travel_direction = pygame.Vector2(0, 1).rotate(player.rotation)
+        else:
+            travel_direction = pygame.Vector2(0, 1)
+
+        search_range = 280 + max(0, int(getattr(player, "missile_level", 0))) * 120
+        target = best_enemy_lock_candidate(
+            shot.position,
+            travel_direction,
+            search_range,
+            140.0,
+            live_enemies,
+        )
+        if target is None:
+            live_enemies.sort(key=lambda enemy: shot.position.distance_to(enemy.position))
+            target = live_enemies[0]
+
+        shot.guided_target = target
+        return target
+
+    def update_player_guided_missiles(dt_seconds):
+        if shots is None or player is None:
+            return
+
+        for shot in list(shots):
+            if getattr(shot, "owner", None) != "player_missile":
+                continue
+
+            target = acquire_player_missile_target(shot)
+            if target is None:
+                continue
+
+            offset = target.position - shot.position
+            if offset.length_squared() <= 1e-6:
+                continue
+
+            desired_direction = offset.normalize()
+            speed = max(220.0, shot.velocity.length())
+            if shot.velocity.length_squared() > 1e-6:
+                current_direction = shot.velocity.normalize()
+            else:
+                current_direction = desired_direction
+
+            turn_rate = 210.0 + player.missile_level * 55.0
+            angle_delta = current_direction.angle_to(desired_direction)
+            max_turn = turn_rate * dt_seconds
+            clamped_turn = max(-max_turn, min(max_turn, angle_delta))
+            new_direction = current_direction.rotate(clamped_turn)
+            shot.velocity = new_direction * speed
+
+    def sector_from_world_offset():
+        return (
+            int(round(world_offset.x / float(sector_manager.sector_width))),
+            int(round(world_offset.y / float(sector_manager.sector_height))),
+        )
+
     def sync_station_sectors(force=False):
         nonlocal active_sector, station_sprites_by_id, scanner_live_window, scanner_live_timer
         if player is None:
             return False
 
-        player_world = player.position + world_offset
-        center_sector = sector_manager.world_to_sector(player_world)
+        center_sector = sector_from_world_offset()
         if not force and center_sector == active_sector:
             return False
 
@@ -3089,7 +3530,7 @@ def main():
             scanner_live_window.clear()
             scanner_live_timer = 0.0
         desired_ids = set()
-        stations_data = stations_around_with_built(center_sector[0], center_sector[1], radius=1)
+        stations_data = stations_around_with_built(center_sector[0], center_sector[1], radius=0)
         station_edge_buffer = 120
 
         for station_id, world_x, world_y in stations_data:
@@ -3123,13 +3564,12 @@ def main():
         if player is None:
             return
 
-        player_world = player.position + world_offset
-        center_sector = sector_manager.world_to_sector(player_world)
+        center_sector = sector_from_world_offset()
         if not force and center_sector == active_sector:
             return
 
         desired_ids = set()
-        planets_data = sector_manager.planets_around(center_sector[0], center_sector[1], radius=1)
+        planets_data = sector_manager.planets_around(center_sector[0], center_sector[1], radius=0)
         planet_edge_buffer = 140
 
         for planet_id, world_x, world_y, accepted_metal, color in planets_data:
@@ -3164,17 +3604,18 @@ def main():
         for asteroid in list(asteroids):
             asteroid.kill()
 
-        asteroid_specs = sector_manager.asteroids_around(active_sector[0], active_sector[1], radius=1)
+        asteroid_specs = sector_manager.asteroids_around(active_sector[0], active_sector[1], radius=0)
         safe_spawn_radius = 180
+        asteroid_edge_buffer = 96
         for asteroid_id, world_x, world_y, radius, vx, vy in asteroid_specs:
             if asteroid_id in destroyed_seed_asteroids:
                 continue
 
             local_x = world_x - world_offset.x
             local_y = world_y - world_offset.y
-            if local_x < -280 or local_x > SCREEN_WIDTH + 280:
+            if local_x < asteroid_edge_buffer or local_x > SCREEN_WIDTH - asteroid_edge_buffer:
                 continue
-            if local_y < -280 or local_y > SCREEN_HEIGHT + 280:
+            if local_y < asteroid_edge_buffer or local_y > SCREEN_HEIGHT - asteroid_edge_buffer:
                 continue
 
             # Prevent sector refreshes from spawning junk directly on the ship.
@@ -3188,7 +3629,7 @@ def main():
             asteroid.combat_level = asteroid_level_for_radius(radius)
 
     def update_world_offset_from_wrap(prev_position, new_position):
-        nonlocal station_message, station_message_timer
+        nonlocal station_message, station_message_timer, sector_wrap_transition_timer
         wrapped = False
 
         if prev_position.x > SCREEN_WIDTH * 0.5 and new_position.x < 0:
@@ -3206,6 +3647,7 @@ def main():
             wrapped = True
 
         if wrapped:
+            sector_wrap_transition_timer = 0.18
             sector_changed = sync_station_sectors(force=True)
             sync_planet_sectors(force=True)
             sync_asteroid_sectors(force=True)
@@ -3984,6 +4426,62 @@ def main():
             )
         return specs
 
+    def ship_auto_mining_target_asteroids(limit=None):
+        if asteroids is None or player is None or player.auto_mining_level <= 0:
+            return []
+
+        max_targets = player.get_auto_mining_drone_count() if limit is None else int(limit)
+        if max_targets <= 0:
+            return []
+
+        max_range = player.get_auto_mining_range()
+        candidates = []
+        for asteroid in list(asteroids):
+            if not asteroid.alive():
+                continue
+            distance = player.position.distance_to(asteroid.position)
+            if distance > max_range:
+                continue
+            candidates.append((distance, asteroid))
+        candidates.sort(key=lambda item: item[0])
+        return [asteroid for _, asteroid in candidates[:max_targets]]
+
+    def ship_auto_mining_drone_specs():
+        if player is None or player.auto_mining_level <= 0:
+            return []
+
+        targets = ship_auto_mining_target_asteroids()
+        specs = []
+        if targets:
+            for idx, asteroid in enumerate(targets):
+                harvest_key = f"ship:{asteroid_tracking_id(asteroid)}"
+                threshold = max(1.1, asteroid.radius / 16.0)
+                progress = min(1.0, float(ship_auto_mining_progress.get(harvest_key, 0.0)) / threshold)
+                travel = 0.24 + 0.5 * (0.5 + 0.5 * math.sin(elapsed_time * 3.2 + idx * 1.1 + progress * 3.4))
+                drone_anchor = player.position + pygame.Vector2(24 + idx * 6, 0).rotate(elapsed_time * (64 + idx * 8) + idx * 140)
+                drone_pos = drone_anchor.lerp(asteroid.position, min(0.82, travel))
+                specs.append(
+                    {
+                        "position": drone_pos,
+                        "target": asteroid.position,
+                        "color": get_metal_color(getattr(asteroid, "metal_type", "iron")),
+                    }
+                )
+            return specs
+
+        idle_count = player.get_auto_mining_drone_count()
+        for idx in range(idle_count):
+            angle = elapsed_time * (76 + idx * 7) + idx * (360.0 / max(1, idle_count))
+            orbit = pygame.Vector2(24 + idx * 5, 0).rotate(angle)
+            specs.append(
+                {
+                    "position": player.position + orbit,
+                    "target": None,
+                    "color": (125, 211, 252),
+                }
+            )
+        return specs
+
     def platform_mining_reward(metals):
         credits = 0
         parts = 0
@@ -4052,6 +4550,44 @@ def main():
         for harvest_key in list(platform_harvest_progress.keys()):
             if harvest_key not in active_keys:
                 platform_harvest_progress.pop(harvest_key, None)
+
+    def update_ship_auto_mining_behavior(dt_seconds):
+        nonlocal ship_auto_mining_progress
+        if asteroids is None or player is None or player.auto_mining_level <= 0 or is_docked:
+            ship_auto_mining_progress = {}
+            return
+
+        active_keys = set()
+        targets = ship_auto_mining_target_asteroids()
+        for asteroid in targets:
+            harvest_key = f"ship:{asteroid_tracking_id(asteroid)}"
+            active_keys.add(harvest_key)
+            threshold = max(1.1, asteroid.radius / 16.0)
+            ship_auto_mining_progress[harvest_key] = float(ship_auto_mining_progress.get(harvest_key, 0.0)) + dt_seconds * player.get_auto_mining_harvest_rate()
+            if ship_auto_mining_progress[harvest_key] < threshold:
+                continue
+
+            ship_auto_mining_progress.pop(harvest_key, None)
+            seeded_id = getattr(asteroid, "seeded_id", None)
+            if seeded_id is not None:
+                destroyed_seed_asteroids.add(seeded_id)
+            impact_position = asteroid.position.copy()
+            play_sfx("asteroid_hit")
+            mined_metals = asteroid.split()
+            if mined_metals:
+                player.add_metal_batch(mined_metals)
+                spawn_metal_pickup_fx(metal_pickup_fx, impact_position, mined_metals)
+                log_event(
+                    "resource_mined_auto_drone",
+                    metals=mined_metals,
+                    total_units=player.total_metal_units(),
+                    level=player.auto_mining_level,
+                )
+            break
+
+        for harvest_key in list(ship_auto_mining_progress.keys()):
+            if harvest_key not in active_keys:
+                ship_auto_mining_progress.pop(harvest_key, None)
 
     def fire_defense_turret_variant(turret, turret_pos, target_enemy):
         variant = str(turret.get("variant", "onslaught_alpha"))
@@ -4256,6 +4792,16 @@ def main():
             return
         if god_mode:
             return
+        if hit_source == "asteroid_collision" and player.absorb_deflector_hit():
+            play_sfx("player_hit")
+            station_message = "Deflector shield absorbed asteroid impact"
+            station_message_timer = 1.2
+            log_event(
+                "deflector_hit",
+                source=hit_source,
+                deflector_layers=player.deflector_layers,
+            )
+            return
         if player.absorb_hit():
             play_sfx("player_hit")
             station_message = f"Shield absorbed hit ({player.shield_layers} layers left)"
@@ -4268,6 +4814,47 @@ def main():
             )
             return
         trigger_player_destroyed()
+
+    def handle_ftl_jump_action(target_sector):
+        nonlocal station_message, station_message_timer, world_offset, player_spawn_grace_timer
+        if not has_active_game or player is None:
+            return False
+        if is_docked:
+            station_message = "Undock before initiating FTL"
+            station_message_timer = 1.4
+            play_sfx("ui_click")
+            return True
+        if target_sector == active_sector:
+            station_message = "Already in that sector"
+            station_message_timer = 1.2
+            play_sfx("ui_click")
+            return True
+
+        reachable = owned_ftl_target_sectors(active_sector, player.warp_drive_level)
+        if target_sector not in reachable:
+            station_message = "Target sector is outside owned FTL range"
+            station_message_timer = 1.5
+            play_sfx("ui_click")
+            return True
+
+        sync_active_sector_enemies_to_persistent()
+        world_offset.update(
+            float(target_sector[0] * sector_manager.sector_width),
+            float(target_sector[1] * sector_manager.sector_height),
+        )
+        player.position.update(SCREEN_WIDTH * 0.5, SCREEN_HEIGHT * 0.5)
+        player_spawn_grace_timer = max(player_spawn_grace_timer, 1.6)
+        sector_changed = sync_station_sectors(force=True)
+        sync_planet_sectors(force=True)
+        sync_asteroid_sectors(force=True)
+        if sector_changed:
+            load_active_sector_enemies(reset_grace=True)
+        capture_sector_snapshot(active_sector[0], active_sector[1], visited=True, charted=True)
+        apply_scanner_reveal()
+        station_message = f"FTL jump complete: {active_sector[0]},{active_sector[1]}"
+        station_message_timer = 1.5
+        play_sfx("upgrade")
+        return True
 
     def play_player_death_animation():
         nonlocal elapsed_time
@@ -4291,7 +4878,7 @@ def main():
                     obj.draw(screen)
 
             draw_ship_explosion_fx(screen, ship_explosion_fx)
-            pygame.display.flip()
+            present_frame()
 
     def trigger_player_destroyed():
         if player is None:
@@ -4315,13 +4902,19 @@ def main():
         nonlocal targeting_mode_timer, targeting_locked_targets
         nonlocal current_enemy_spawn_interval, current_enemy_max_alive
         nonlocal scanner_cooldown_timer, scanner_passive_timer, scanner_live_window, scanner_live_timer
-        nonlocal anomaly_tick_timer, anomaly_pressure_hint
-        nonlocal station_defense_fire_timer, enemy_station_fire_timer
-        nonlocal infrastructure_defense_fire_timer, passive_drone_income_timer, drone_intercept_cooldown
+        nonlocal anomaly_tick_timer, anomaly_pressure_hint, sector_wrap_transition_timer
+        nonlocal station_defense_fire_timer, enemy_station_fire_timer, station_health, station_disabled_timers
+        nonlocal infrastructure_defense_fire_timer, passive_drone_income_timer, ship_auto_mining_progress, drone_intercept_cooldown
         nonlocal platform_logistics_hint_timer
         nonlocal player_spawn_grace_timer
 
         player_spawn_grace_timer = max(0.0, player_spawn_grace_timer - dt)
+        previous_wrap_transition_timer = sector_wrap_transition_timer
+        sector_wrap_transition_timer = max(0.0, sector_wrap_transition_timer - dt)
+        if previous_wrap_transition_timer > 0.0 and sector_wrap_transition_timer <= 0.0:
+            sync_station_sectors(force=True)
+            sync_planet_sectors(force=True)
+            sync_asteroid_sectors(force=True)
 
         command_profile = command_progression_profile()
         pressure = contract_attack_pressure() * float(command_profile.get("threat_scale", 1.0))
@@ -4348,7 +4941,9 @@ def main():
             update_raid_events(dt)
             update_platform_convoy_events(dt)
             repair_infrastructure_from_shields(dt)
+            repair_station_combat_state(dt)
             update_platform_logistics(dt)
+            update_ship_auto_mining_behavior(dt)
 
             drone_intercept_cooldown = max(0.0, drone_intercept_cooldown - dt)
 
@@ -4415,12 +5010,14 @@ def main():
                         continue
                     if station_owner(sid) != "player":
                         continue
+                    if station_is_disabled(sid):
+                        continue
                     st = get_station_upgrade_state(sid)
                     live_targets = [enemy for enemy in list(enemies) if enemy.alive()]
                     if not live_targets:
                         continue
 
-                    laser_level = int(st.get("laser", 0))
+                    laser_level = max(1, int(st.get("laser", 0)))
                     missile_level = int(st.get("missile", 0))
                     laser_range = 220 + int(st.get("level", 1)) * 26 + laser_level * 30
                     missile_range = 280 + int(st.get("level", 1)) * 34 + missile_level * 38
@@ -4466,7 +5063,9 @@ def main():
 
                     if fired:
                         play_sfx("enemy_shoot")
+                station_defense_fire_timer = 1.05
 
+            if enemies is not None:
                 live_targets = [enemy for enemy in list(enemies) if enemy.alive()]
                 if live_targets:
                     for turret in get_sector_defense_turrets(active_sector):
@@ -4485,7 +5084,6 @@ def main():
                             continue
                         if fire_defense_turret_variant(turret, turret_pos, target):
                             play_sfx("enemy_shoot")
-                station_defense_fire_timer = 2.35
 
             infrastructure_defense_fire_timer = max(0.0, infrastructure_defense_fire_timer - dt)
             if infrastructure_defense_fire_timer <= 0.0 and enemies is not None:
@@ -4493,7 +5091,9 @@ def main():
                     sid = getattr(station, "station_id", "")
                     if parse_station_sector(sid) != active_sector:
                         continue
-                    if station_owner(sid) == "player":
+                    if station_owner(sid) != "player":
+                        continue
+                    if station_is_disabled(sid):
                         continue
 
                     st = get_station_upgrade_state(sid)
@@ -4522,11 +5122,13 @@ def main():
                             "missile",
                             drone_lvl,
                         )
-                infrastructure_defense_fire_timer = 2.05
+                infrastructure_defense_fire_timer = 1.25
 
             if enemy_station_fire_timer <= 0.0 and player is not None:
+                station_targets = active_sector_station_targets()
                 infra_targets = active_sector_infrastructure_targets()
                 platform_targets = active_sector_mining_platform_targets()
+                turret_targets = active_sector_defense_turret_targets()
                 for station in list(stations) if stations is not None else []:
                     sid = getattr(station, "station_id", "")
                     if parse_station_sector(sid) != active_sector:
@@ -4538,9 +5140,19 @@ def main():
                     laser_level = int(st.get("laser", 0))
                     missile_level = int(st.get("missile", 0))
                     level = int(st.get("level", 1))
-                    if platform_targets and active_sector in raid_events:
+                    if station_targets and active_sector in raid_events:
+                        target_pos = min(
+                            station_targets,
+                            key=lambda item: station.position.distance_to(item["position"]),
+                        )["position"]
+                    elif platform_targets and active_sector in raid_events:
                         target_pos = min(
                             platform_targets,
+                            key=lambda item: station.position.distance_to(item["position"]),
+                        )["position"]
+                    elif station_targets:
+                        target_pos = min(
+                            station_targets,
                             key=lambda item: station.position.distance_to(item["position"]),
                         )["position"]
                     elif infra_targets:
@@ -4548,12 +5160,17 @@ def main():
                             infra_targets,
                             key=lambda item: station.position.distance_to(item["position"]),
                         )["position"]
+                    elif turret_targets:
+                        target_pos = min(
+                            turret_targets,
+                            key=lambda item: station.position.distance_to(item["position"]),
+                        )["position"]
                     else:
                         target_pos = player.position
 
                     distance_to_player = station.position.distance_to(target_pos)
 
-                    if player.cloak_active and not infra_targets and not platform_targets:
+                    if player.cloak_active and not station_targets and not infra_targets and not platform_targets and not turret_targets:
                         continue
 
                     laser_range = 210 + level * 20 + laser_level * 28
@@ -4576,23 +5193,37 @@ def main():
                             "laser",
                             laser_level,
                         )
-                enemy_station_fire_timer = 2.8
+                enemy_station_fire_timer = 1.95
 
+            station_targets = active_sector_station_targets()
             infra_targets = active_sector_infrastructure_targets()
             platform_targets = active_sector_mining_platform_targets()
             turret_targets = active_sector_defense_turret_targets()
-            prioritized_targets = platform_targets if (platform_targets and active_sector in raid_events) else (infra_targets + turret_targets + platform_targets)
+            prioritized_targets = (
+                station_targets + platform_targets + infra_targets + turret_targets
+                if active_sector in raid_events
+                else station_targets + infra_targets + turret_targets + platform_targets
+            )
             if prioritized_targets and enemies is not None:
                 sec = sector_security_rating(active_sector)
-                if sec < 5.0:
-                    hostile_focus = min(3, len(prioritized_targets))
+                if sec < 5.0 or active_sector in raid_events:
                     ordered_enemies = [enemy for enemy in list(enemies) if enemy.alive()]
                     ordered_enemies.sort(key=lambda e: e.position.distance_to(player.position))
+                    hostile_focus = min(
+                        len(ordered_enemies),
+                        max(2, min(6, len(prioritized_targets) + max(0, int(round(4.5 - sec))))),
+                    )
+                    for enemy in ordered_enemies:
+                        enemy.forced_target_timer = 0.0
                     for enemy in ordered_enemies[:hostile_focus]:
+                        target = min(prioritized_targets, key=lambda t: enemy.position.distance_to(t["position"]))
+                        enemy.forced_target_position = pygame.Vector2(target["position"])
+                        enemy.forced_target_velocity = pygame.Vector2(0, 0)
+                        enemy.forced_target_radius = float(target.get("radius", 18.0))
+                        enemy.forced_target_timer = 0.9
                         if enemy.shoot_timer > 0:
                             continue
-                        target = min(prioritized_targets, key=lambda t: enemy.position.distance_to(t["position"]))
-                        if enemy.position.distance_to(target["position"]) > enemy.view_range * 1.05:
+                        if enemy.position.distance_to(target["position"]) > enemy.view_range * 1.08:
                             continue
                         enemy.aim_at_target(target["position"], None)
                         enemy.shoot()
@@ -4694,6 +5325,7 @@ def main():
                     load_active_sector_enemies(reset_grace=True)
 
             update_mining_platform_drone_behavior(dt)
+            update_player_guided_missiles(dt)
 
             if enemies is not None:
                 for enemy in list(enemies):
@@ -4727,8 +5359,7 @@ def main():
                             for enemy in list(enemies):
                                 if enemy.collides_with(shot):
                                     shot.kill()
-                                    missile_damage = 2.0 + player.missile_level * 0.9
-                                    missile_damage *= player.get_combat_damage_multiplier()
+                                    missile_damage = player.get_missile_damage()
                                     impact_position = enemy.position.copy()
                                     will_destroy = enemy.health <= missile_damage
                                     if will_destroy:
@@ -4739,7 +5370,7 @@ def main():
                                     if will_destroy:
                                         award_player_xp(enemy_xp_reward(enemy) + 4)
 
-                                    splash_radius = 64 + player.missile_level * 14
+                                    splash_radius = player.get_missile_splash_radius()
                                     for splash_target in list(enemies):
                                         if not splash_target.alive() or splash_target is enemy:
                                             continue
@@ -4747,7 +5378,7 @@ def main():
                                         if distance > splash_radius:
                                             continue
                                         splash_ratio = 1.0 - min(1.0, distance / splash_radius)
-                                        splash_damage = max(0.2, missile_damage * 0.55 * splash_ratio)
+                                        splash_damage = max(0.1, missile_damage * 0.42 * splash_ratio)
                                         splash_kill = splash_target.health <= splash_damage
                                         splash_target.take_damage(splash_damage)
                                         if splash_kill:
@@ -4757,8 +5388,11 @@ def main():
                                         ship_explosion_fx,
                                         impact_position,
                                         8 + player.missile_level * 1.2,
-                                        "#fdba74",
+                                        "#f97316",
                                         burst_scale=1.0,
+                                        fragments=False,
+                                        sparks=False,
+                                        spark_life_scale=0.65,
                                     )
                                     break
                     elif getattr(shot, "owner", None) in ("station_laser", "station_missile"):
@@ -4790,6 +5424,18 @@ def main():
                         intercept_pos = try_drone_intercept_hostile_shot(shot)
                         if intercept_pos is not None:
                             spawn_ship_explosion_fx(ship_explosion_fx, intercept_pos, 5, "#67e8f9", burst_scale=0.65)
+                            continue
+                        hit_station = False
+                        for target in active_sector_station_targets():
+                            if shot.position.distance_to(target["position"]) <= target["radius"] + shot.radius:
+                                shot.kill()
+                                disabled = apply_station_damage(target, float(getattr(shot, "damage", 1.0)))
+                                hit_station = True
+                                if disabled:
+                                    station_message = "Station disabled"
+                                    station_message_timer = 1.4
+                                break
+                        if hit_station:
                             continue
                         hit_infra = False
                         for target in active_sector_infrastructure_targets():
@@ -4834,6 +5480,18 @@ def main():
                         intercept_pos = try_drone_intercept_hostile_shot(shot)
                         if intercept_pos is not None:
                             spawn_ship_explosion_fx(ship_explosion_fx, intercept_pos, 5, "#67e8f9", burst_scale=0.65)
+                            continue
+                        hit_station = False
+                        for target in active_sector_station_targets():
+                            if shot.position.distance_to(target["position"]) <= target["radius"] + shot.radius:
+                                shot.kill()
+                                disabled = apply_station_damage(target, 1.0)
+                                hit_station = True
+                                if disabled:
+                                    station_message = "Station disabled"
+                                    station_message_timer = 1.4
+                                break
+                        if hit_station:
                             continue
                         hit_infra = False
                         for target in active_sector_infrastructure_targets():
@@ -4887,31 +5545,33 @@ def main():
                             impact_pos = asteroid.position.copy()
                             if getattr(shot, "owner", None) in (
                                 "player",
-                                "player_missile",
                                 "station_laser",
                                 "station_missile",
                             ):
                                 award_player_xp(asteroid_xp_reward(asteroid))
-                            mined_metals = asteroid.split()
-                            if mined_metals:
-                                player.add_metal_batch(mined_metals)
-                                spawn_metal_pickup_fx(metal_pickup_fx, impact_pos, mined_metals)
-                                play_sfx("pickup")
-                                mined_summary = ", ".join(
-                                    f"{metal}+{qty}" for metal, qty in mined_metals.items()
-                                )
-                                station_message = f"Collected {mined_summary}"
-                                station_message_timer = 1.4
-                                log_event(
-                                    "resource_mined",
-                                    metals=mined_metals,
-                                    total_units=player.total_metal_units(),
-                                )
+                            if getattr(shot, "owner", None) != "player_missile":
+                                mined_metals = asteroid.split()
+                                if mined_metals:
+                                    player.add_metal_batch(mined_metals)
+                                    spawn_metal_pickup_fx(metal_pickup_fx, impact_pos, mined_metals)
+                                    play_sfx("pickup")
+                                    mined_summary = ", ".join(
+                                        f"{metal}+{qty}" for metal, qty in mined_metals.items()
+                                    )
+                                    station_message = f"Collected {mined_summary}"
+                                    station_message_timer = 1.4
+                                    log_event(
+                                        "resource_mined",
+                                        metals=mined_metals,
+                                        total_units=player.total_metal_units(),
+                                    )
                             break
 
     def render_frame():
         camera = player.position if player else pygame.Vector2(0, 0)
         draw_background(camera)
+
+        station_statuses = active_sector_station_statuses() if has_active_game else []
 
         if drawable:
             for obj in drawable:
@@ -4960,11 +5620,15 @@ def main():
                 elapsed_time,
             )
 
+            draw_station_status_overlays(screen, station_statuses)
+
+        if game_state == "playing" and player is not None and player.auto_mining_level > 0 and not is_docked:
+            draw_support_drones(screen, ship_auto_mining_drone_specs(), anchor_position=player.position)
+
         draw_ship_explosion_fx(screen, ship_explosion_fx)
         step_and_draw_metal_pickup_fx(screen, metal_pickup_fx, dt)
 
         left_hud_x = lower_left_hud_anchor()
-        message_y = lower_left_message_y()
 
         if game_state == "playing" and player is not None and has_active_game:
             if player.targeting_beam_level > 0 and not is_docked:
@@ -5015,71 +5679,54 @@ def main():
                 if locked:
                     lock_text = hud_font.render("LOCK", True, "#93c5fd")
                     screen.blit(lock_text, (int(beam_end.x) + 8, int(beam_end.y) - 10))
-
-            draw_hud_chip(f"Cargo {player.total_metal_units()} metal", left_hud_x, SCREEN_HEIGHT - 34)
-            draw_hud_chip(f"Gold {player.credits}", SCREEN_WIDTH - 194, SCREEN_HEIGHT - 34, UI_COLORS["accent"])
-            draw_hud_chip(f"Shields {player.shield_layers}/{player.shield_level}", 10, 34, (125, 211, 252))
-            draw_hud_chip(
-                f"Multishot L{player.multishot_level} ({len(player.multishot_pattern())} shots)",
-                10,
-                58,
-                (196, 181, 253),
-            )
-            draw_hud_chip(f"Targeting Beam L{player.targeting_beam_level}", 10, 82, UI_COLORS["accent_alt"])
-            draw_hud_chip(
-                f"Targeting Computer L{player.targeting_computer_level} ({player.targeting_computer_level} locks)",
-                10,
-                106,
-                UI_COLORS["accent_alt"],
-            )
-            draw_hud_chip(
-                (
-                    f"Sublight Warp L{player.warp_drive_level} "
-                    f"{player.warp_energy:.1f}/{player.get_warp_capacity_seconds():.1f}s"
-                ),
-                10,
-                130,
-                (249, 168, 212) if player.warp_boosting else (251, 207, 232),
-            )
-            draw_hud_chip(
-                f"Sector {active_sector[0]},{active_sector[1]}  Seed {world_seed}",
-                10,
-                154,
-                UI_COLORS["muted"],
-            )
-            draw_hud_chip(
-                f"Owner {owner_label(sector_owner(active_sector))}",
-                10,
-                178,
-                UI_COLORS["accent_alt"],
-            )
             cmd_profile = command_progression_profile()
-            draw_hud_chip(
-                f"Command L{int(cmd_profile.get('level', 1))}",
-                SCREEN_WIDTH - 220,
-                34,
-                UI_COLORS["accent_alt"],
-            )
+            top_left_items = [
+                (f"Shields {player.shield_layers}/{player.shield_level}", (125, 211, 252)),
+                (
+                    (
+                        f"Sublight Warp L{player.warp_drive_level} "
+                        f"{player.warp_energy:.1f}/{player.get_warp_capacity_seconds():.1f}s"
+                    ),
+                    (249, 168, 212) if player.warp_boosting else (251, 207, 232),
+                ),
+            ]
+            top_right_items = [
+                (f"Command L{int(cmd_profile.get('level', 1))}", UI_COLORS["accent_alt"]),
+            ]
+            bottom_left_items = [
+                (f"Cargo {player.total_metal_units()} metal", UI_COLORS["text"]),
+            ]
+            bottom_right_items = [
+                (f"Gold {player.credits}", UI_COLORS["accent"]),
+            ]
+
+            if god_mode:
+                top_right_items.insert(0, ("GODMODE ACTIVE", UI_COLORS["danger"]))
+
             if sector_owner(active_sector) == "player":
                 sec = sector_security_rating(active_sector)
-                draw_hud_chip(
-                    f"Sector Security {sec:.1f}",
-                    10,
-                    202,
-                    UI_COLORS["ok"] if sec >= 4.0 else UI_COLORS["muted"],
+                top_right_items.append(
+                    (f"Sector Security {sec:.1f}", UI_COLORS["ok"] if sec >= 4.0 else UI_COLORS["muted"])
                 )
+                disabled_station_count = sum(1 for status in station_statuses if status["disabled"])
+                damaged_station_statuses = [status for status in station_statuses if not status["disabled"] and status["hp_ratio"] < 0.995]
+                if disabled_station_count > 0:
+                    top_right_items.append((f"Stations Disabled {disabled_station_count}", UI_COLORS["danger"]))
+                elif damaged_station_statuses:
+                    weakest = min(damaged_station_statuses, key=lambda status: status["hp_ratio"])
+                    top_right_items.append((f"Station Hull {int(round(weakest['hp_ratio'] * 100))}%", UI_COLORS["warn"]))
                 logistics = platform_logistics_summary(active_sector)
                 if int(logistics.get("live", 0)) > 0:
                     convoy = platform_convoy_snapshot(active_sector)
                     convoy_warning = convoy_warning_label(int(convoy.get("strain", 0)))
-                    draw_hud_chip(
+                    top_right_items.append(
+                        (
                         (
                             f"Platform Links {int(logistics.get('linked', 0))}/{int(logistics.get('live', 0))} | "
                             f"Buffer {int(logistics.get('buffer_credits', 0))}g/{int(logistics.get('buffer_parts', 0))}p"
                         ),
-                        10,
-                        226,
-                        UI_COLORS["warn"] if int(logistics.get("offline", 0)) > 0 else UI_COLORS["muted"],
+                            UI_COLORS["warn"] if int(logistics.get("offline", 0)) > 0 else UI_COLORS["muted"],
+                        )
                     )
                     convoy_text = (
                         (
@@ -5096,83 +5743,37 @@ def main():
                             f"Strain {int(convoy.get('strain', 0))} {convoy_warning}"
                         )
                     )
-                    draw_hud_chip(
-                        convoy_text,
-                        10,
-                        250,
-                        UI_COLORS["warn"] if bool(convoy.get("active", False)) else UI_COLORS["muted"],
+                    top_right_items.append(
+                        (convoy_text, UI_COLORS["warn"] if bool(convoy.get("active", False)) else UI_COLORS["muted"])
                     )
-            draw_hud_chip(
-                (
-                    f"Combat L{player.combat_level} "
-                    f"XP {player.combat_xp}/{player.xp_needed_for_next_combat_level()} "
-                    f"DMG x{player.get_combat_damage_multiplier():.2f}"
-                ),
-                10,
-                274,
-                (253, 230, 138),
-            )
-            draw_hud_chip(
-                f"Missiles L{player.missile_level} CD {player.missile_timer:.1f}s (F)",
-                10,
-                298,
-                (167, 243, 208) if player.missile_timer <= 0 else (209, 213, 219),
-            )
-            draw_hud_chip(
-                (
-                    f"Cloak L{player.cloak_level} "
-                    f"{player.cloak_timer:.1f}/{player.get_cloak_capacity_seconds():.1f}s (V)"
-                ),
-                10,
-                322,
-                (125, 211, 252) if player.cloak_active else (148, 163, 184),
-            )
 
             if raid_events:
-                draw_hud_chip(
-                    f"Raid Alerts {len(raid_events)}",
-                    10,
-                    346,
-                    UI_COLORS["warn"],
-                )
+                top_right_items.append((f"Raid Alerts {len(raid_events)}", UI_COLORS["warn"]))
 
             if active_sector in raid_events:
                 raid = raid_events[active_sector]
-                draw_hud_chip(
+                top_right_items.append(
                     (
                         f"UNDER ATTACK: {owner_label(raid['faction'])} "
-                        f"Waves {raid.get('waves_remaining', 0)}"
-                    ),
-                    10,
-                    370,
-                    UI_COLORS["danger"],
+                        f"Waves {raid.get('waves_remaining', 0)}",
+                        UI_COLORS["danger"],
+                    )
                 )
                 if float(raid.get("security", 0.0)) > 0.0:
-                    draw_hud_chip(
-                        f"Defense Dampening x{float(raid.get('security', 0.0)):.1f}",
-                        10,
-                        394,
-                        UI_COLORS["ok"],
+                    top_right_items.append(
+                        (f"Defense Dampening x{float(raid.get('security', 0.0)):.1f}", UI_COLORS["ok"])
                     )
 
             if scanner_cooldown_timer > 0:
-                draw_hud_chip(
-                    f"Scanner Cooldown {scanner_cooldown_timer:.1f}s",
-                    10,
-                    418,
-                    UI_COLORS["warn"],
-                )
+                top_right_items.append((f"Scanner Cooldown {scanner_cooldown_timer:.1f}s", UI_COLORS["warn"]))
 
             anomaly_profile = anomaly_effect_profile(active_sector)
             anomaly_pressure = float(anomaly_profile.get("pressure", 0.0))
             if anomaly_pressure > 0.0:
-                draw_hud_chip(
-                    f"Anomaly Pressure {anomaly_pressure:.2f} ({anomaly_pressure_hint})",
-                    10,
-                    442,
-                    UI_COLORS["warn"],
-                )
+                top_right_items.append((f"Anomaly Pressure {anomaly_pressure:.2f} ({anomaly_pressure_hint})", UI_COLORS["warn"]))
 
+            context_prompt = None
+            context_prompt_color = UI_COLORS["accent"]
             if not is_docked and game_state == "playing":
                 near_station = nearest_station_in_range()
                 near_planet = nearest_planet_in_range()
@@ -5190,58 +5791,44 @@ def main():
                 if near_station is not None and station_dist <= planet_dist:
                     station_claim_owner = station_owner(near_station.station_id)
                     if station_claim_owner == "player":
-                        draw_hud_chip("Press E at Station: Upgrade", 10, SCREEN_HEIGHT - 60, UI_COLORS["accent"])
+                        context_prompt = "Press E at Station: Upgrade"
+                        context_prompt_color = UI_COLORS["accent"]
                     else:
-                        draw_hud_chip(
-                            f"Press C to Claim Station ({owner_label(station_claim_owner)})",
-                            10,
-                            SCREEN_HEIGHT - 60,
-                            UI_COLORS["warn"],
-                        )
+                        context_prompt = f"Press C to Claim Station ({owner_label(station_claim_owner)})"
+                        context_prompt_color = UI_COLORS["warn"]
                 elif near_planet is not None:
                     planet_claim_owner = planet_owner(near_planet.planet_id)
                     if planet_claim_owner == "player":
-                        draw_hud_chip(
-                            f"Press E at Planet: Land ({near_planet.accepted_metal} market)",
-                            10,
-                            SCREEN_HEIGHT - 60,
-                            UI_COLORS["accent"],
-                        )
+                        context_prompt = f"Press E at Planet: Land ({near_planet.accepted_metal} market)"
+                        context_prompt_color = UI_COLORS["accent"]
                     else:
-                        draw_hud_chip(
-                            f"Press C to Claim Planet ({owner_label(planet_claim_owner)})",
-                            10,
-                            SCREEN_HEIGHT - 60,
-                            UI_COLORS["warn"],
-                        )
+                        context_prompt = f"Press C to Claim Planet ({owner_label(planet_claim_owner)})"
+                        context_prompt_color = UI_COLORS["warn"]
+
+            if context_prompt:
+                bottom_left_items.append((context_prompt, context_prompt_color))
 
             if active_contract is not None:
                 risk_rating = int(active_contract.get("risk_rating", 1))
-                contract_text = hud_font.render(
-                    (
-                        f"Contract: {active_contract['mission']} "
-                        f"({active_contract['amount']} {active_contract['unit']}, "
-                        f"{active_contract.get('tile_distance', 0)} tiles, R{risk_rating}/5) -> "
-                        f"{active_contract['target_type']} {active_contract['target_sector'][0]},"
-                        f"{active_contract['target_sector'][1]}"
-                    ),
-                    True,
-                    UI_COLORS["accent"],
-                )
-                contract_bg = pygame.Rect(8, SCREEN_HEIGHT - 132, contract_text.get_width() + 20, 48)
-                pygame.draw.rect(screen, (9, 16, 29, 188), contract_bg, border_radius=8)
-                pygame.draw.rect(screen, (58, 76, 106), contract_bg, 1, border_radius=8)
-                screen.blit(contract_text, (18, SCREEN_HEIGHT - 128))
-
-                threat_text = hud_font.render(
+                bottom_right_items.append(
                     (
                         f"Threat: R{risk_rating}/5  Spawn {current_enemy_spawn_interval:.2f}s"
-                        f"  Cap {current_enemy_max_alive}"
+                        f"  Cap {current_enemy_max_alive}",
+                        UI_COLORS["warn"],
                     ),
-                    True,
-                    UI_COLORS["warn"],
                 )
-                screen.blit(threat_text, (18, SCREEN_HEIGHT - 106))
+                bottom_right_items.append(
+                    (
+                        (
+                            f"Contract: {active_contract['mission']} "
+                            f"({active_contract['amount']} {active_contract['unit']}, "
+                            f"{active_contract.get('tile_distance', 0)} tiles, R{risk_rating}/5) -> "
+                            f"{active_contract['target_type']} {active_contract['target_sector'][0]},"
+                            f"{active_contract['target_sector'][1]}"
+                        ),
+                        UI_COLORS["accent"],
+                    )
+                )
 
                 target_obj = get_active_contract_target_object()
                 if target_obj is not None:
@@ -5269,7 +5856,29 @@ def main():
                         )
 
             if station_message_timer > 0 and station_message:
-                draw_hud_chip(station_message, left_hud_x, message_y, UI_COLORS["accent"])
+                bottom_left_items.append((station_message, UI_COLORS["accent"]))
+
+            if audio.music_loaded:
+                music_state = "Muted" if audio.all_audio_muted or audio.music_muted else "On"
+                bottom_right_items.append((f"Music {music_state}", UI_COLORS["muted"]))
+                if audio.music_source:
+                    bottom_right_items.append((f"Track {audio.music_source}", UI_COLORS["muted"]))
+
+            top_left_x = 10
+            top_left_y = pause_button_rect.bottom + 10
+            top_right_y = audio_toggle_button.bottom + 10
+            bottom_left_base = SCREEN_HEIGHT - 10
+            bottom_right_base = (
+                min(rect.top for rect in touch_action_buttons.values()) - 10
+                if show_touch_action_controls and not is_docked
+                else SCREEN_HEIGHT - 10
+            )
+            lane_width = max(240, SCREEN_WIDTH // 2 - 32)
+
+            draw_hud_stack(top_left_items, top_left_x, top_left_y, max_width=lane_width)
+            draw_hud_stack(top_right_items, SCREEN_WIDTH - 10, top_right_y, align="right", max_width=lane_width)
+            draw_hud_stack_up(bottom_left_items, left_hud_x, bottom_left_base, max_width=lane_width)
+            draw_hud_stack_up(bottom_right_items, SCREEN_WIDTH - 10, bottom_right_base, align="right", max_width=lane_width)
 
             if claim_operation["active"]:
                 claim_ratio = 0.0
@@ -5310,10 +5919,7 @@ def main():
         if game_state == "playing":
             draw_button(screen, pause_button_rect, "Esc: Pause", hud_font, active=False, tone="alt")
             if show_touch_action_controls and not is_docked:
-                draw_touch_movement_buttons(screen, touch_movement_buttons)
                 draw_touch_action_buttons(screen, touch_action_buttons)
-            if god_mode:
-                draw_hud_chip("GODMODE ACTIVE", 10, 10, UI_COLORS["danger"])
 
         if game_state == "playing" and is_docked and has_active_game:
             overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -5403,7 +6009,6 @@ def main():
                 )
 
         show_pause_home = game_state == "menu" or (game_state == "paused" and pause_tab in ("home", "controls", "audio"))
-        show_overlay_header = game_state == "paused" and pause_tab == "map"
 
         if show_pause_home:
             build_menu_ui_layout()
@@ -5425,28 +6030,15 @@ def main():
                 audio.music_error,
                 show_controls,
                 show_audio,
-                show_map,
                 audio.music_muted,
                 audio.music_volume,
                 audio.sfx_muted,
                 audio.sfx_volume,
             )
 
-        if show_overlay_header:
-            title_map = {
-                "map": "Sector Map",
-            }
-            header_rect = pygame.Rect(24, 20, SCREEN_WIDTH - 48, 52)
-            pygame.draw.rect(screen, (8, 14, 26, 212), header_rect, border_radius=12)
-            pygame.draw.rect(screen, (88, 102, 134), header_rect, 1, border_radius=12)
-            title_text = panel_font.render(title_map.get(pause_tab, "Paused"), True, UI_COLORS["text"])
-            hint_text = hud_font.render("Esc resume | M map | I ship | B build", True, UI_COLORS["muted"])
-            screen.blit(title_text, (header_rect.x + 16, header_rect.y + 8))
-            screen.blit(hint_text, (header_rect.right - hint_text.get_width() - 16, header_rect.y + 17))
+        draw_pause_navigation()
 
-        map_overlay_active = game_state in ("menu", "paused") and has_active_game and (
-            pause_tab == "map" or (pause_tab == "ship" and ship_tab == "map")
-        )
+        map_overlay_active = game_state in ("menu", "paused") and has_active_game and pause_tab == "map"
         if map_overlay_active:
             draw_map_panel(
                 screen,
@@ -5462,9 +6054,11 @@ def main():
                 hud_font,
                 sector_owner_fn=sector_owner,
                 owner_label_fn=owner_label,
-                build_status_fn=build_status_for_sector,
+                build_status_fn=map_action_status_for_sector,
                 raided_sectors=set(raid_events.keys()),
                 tactical_visible_sectors=scanner_live_window,
+                scanner_target_sectors=scanner_target_sectors(active_sector, player.scanner_level if player else 0),
+                ftl_target_sectors=owned_ftl_target_sectors(active_sector, player.warp_drive_level if player else 0),
                 show_close_button=True,
             )
 
@@ -5477,11 +6071,27 @@ def main():
                 ship_panel_rect,
                 player,
                 active_contract,
-                ship_tab,
                 ship_ui,
                 hud_font,
                 panel_font,
+            )
+
+        if game_state in ("menu", "paused") and has_active_game and pause_tab == "status":
+            ship_margin_x = max(88, SCREEN_WIDTH // 14)
+            ship_margin_y = max(52, SCREEN_HEIGHT // 13)
+            status_panel_rect = pygame.Rect(ship_margin_x, ship_margin_y, SCREEN_WIDTH - ship_margin_x * 2, SCREEN_HEIGHT - ship_margin_y * 2)
+            draw_status_panel(
+                screen,
+                status_panel_rect,
+                player,
+                active_contract,
+                status_ui,
+                hud_font,
+                panel_font,
                 command_profile=command_progression_profile(),
+                active_sector=active_sector,
+                sector_owner_label=owner_label(sector_owner(active_sector)),
+                world_seed=world_seed,
             )
 
         if game_state in ("menu", "paused") and has_active_game and pause_tab == "build":
@@ -5498,9 +6108,13 @@ def main():
                     UI_COLORS["muted"],
                 )
                 cost_hint = hud_font.render(f"Cost {int(build_placement_mode['cost'])}g", True, UI_COLORS["accent"])
+                gold_hint = hud_font.render(f"Current gold {int(player.credits)}g", True, UI_COLORS["accent_alt"])
+                cost_x = banner.right - cost_hint.get_width() - 72
+                gold_x = max(banner.x + 18, cost_x - gold_hint.get_width() - 18)
                 screen.blit(placement_title, (banner.x + 18, banner.y + 14))
                 screen.blit(placement_hint, (banner.x + 18, banner.y + 44))
-                screen.blit(cost_hint, (banner.right - cost_hint.get_width() - 72, banner.y + 17))
+                screen.blit(cost_hint, (cost_x, banner.y + 17))
+                screen.blit(gold_hint, (gold_x, banner.y + 17))
                 build_ui["placement_cancel"] = pygame.Rect(banner.right - 52, banner.y + 14, 34, 34)
                 draw_close_button(screen, build_ui["placement_cancel"])
 
@@ -5508,13 +6122,16 @@ def main():
                 sector_rect = pygame.Rect(margin, margin, SCREEN_WIDTH - margin * 2, SCREEN_HEIGHT - margin * 2)
                 pygame.draw.rect(screen, (88, 102, 134), sector_rect, 1, border_radius=16)
 
-                cursor_pos = pygame.mouse.get_pos()
-                valid_preview, reason, _preview_world = validate_build_placement(build_placement_mode["kind"], cursor_pos)
-                draw_build_placement_preview(screen, build_placement_mode["kind"], cursor_pos, valid_preview, elapsed_time)
-                preview_text = hud_font.render(reason if not valid_preview else "Valid placement", True, UI_COLORS["ok"] if valid_preview else UI_COLORS["warn"])
+                cursor_pos = map_window_to_logical(pygame.mouse.get_pos())
+                if cursor_pos is None:
+                    preview_text = hud_font.render("Move cursor into the sector view", True, UI_COLORS["warn"])
+                else:
+                    valid_preview, reason, _preview_world = validate_build_placement(build_placement_mode["kind"], cursor_pos)
+                    draw_build_placement_preview(screen, build_placement_mode["kind"], cursor_pos, valid_preview, elapsed_time)
+                    preview_text = hud_font.render(reason if not valid_preview else "Valid placement", True, UI_COLORS["ok"] if valid_preview else UI_COLORS["warn"])
                 screen.blit(preview_text, (banner.x + 18, banner.bottom - 24))
                 audio.draw_toggle_icon(screen, audio_toggle_button)
-                pygame.display.flip()
+                present_frame()
                 return
 
             build_margin_x = max(96, SCREEN_WIDTH // 12)
@@ -5573,7 +6190,8 @@ def main():
             draw_button(screen, build_ui["subtab_secondary"], subtab_secondary_label, hud_font, active=(not subtab_primary_active))
 
             pager_hint = hud_font.render("Tabs 1/2 and 2/2 keep each panel focused", True, UI_COLORS["muted"])
-            screen.blit(pager_hint, (max(build_panel.x + 20, build_panel.right - pager_hint.get_width() - 20), build_panel.y + 24))
+            pager_x = max(build_panel.x + 20, build_panel.right - pager_hint.get_width() - 72)
+            screen.blit(pager_hint, (pager_x, build_panel.y + 24))
 
             content_y = build_panel.y + 96
 
@@ -5583,6 +6201,8 @@ def main():
                 UI_COLORS["muted"],
             )
             screen.blit(status, (build_panel.x + 20, content_y))
+            build_gold = hud_font.render(f"Current gold: {int(player.credits)}", True, UI_COLORS["accent"])
+            screen.blit(build_gold, (build_panel.right - build_gold.get_width() - 20, content_y))
 
             sid = player_station_in_sector(active_sector)
             has_station = sid is not None
@@ -5601,6 +6221,7 @@ def main():
             if top_group == "construct":
                 construct_gap = 14
                 construct_w = max(220, (build_panel.width - 40 - construct_gap * 2) // 3)
+                status_w = construct_w - 8
                 station_x = build_panel.x + 20
                 platform_x = station_x + construct_w + construct_gap
                 turret_x = platform_x + construct_w + construct_gap
@@ -5624,14 +6245,24 @@ def main():
                 else:
                     station_status_text = f"Ready to build station in sector {active_sector[0]},{active_sector[1]}"
                     station_status_color = UI_COLORS["ok"]
-                screen.blit(
-                    hud_font.render(station_status_text, True, station_status_color),
-                    (station_x, content_y + 78),
+                next_station_y = draw_wrapped_lines(
+                    station_status_text,
+                    station_x,
+                    content_y + 78,
+                    hud_font,
+                    station_status_color,
+                    status_w,
+                    max_lines=3,
                 )
                 if foreign_station_present and not has_station:
-                    screen.blit(
-                        hud_font.render("Non-player station detected here; your station can still be built.", True, UI_COLORS["muted"]),
-                        (station_x, content_y + 100),
+                    draw_wrapped_lines(
+                        "Non-player station detected here; your station can still be built.",
+                        station_x,
+                        next_station_y + 2,
+                        hud_font,
+                        UI_COLORS["muted"],
+                        status_w,
+                        max_lines=3,
                     )
 
                 build_ui["build_platform"] = pygame.Rect(platform_x, content_y + 38, construct_w, 36)
@@ -5669,9 +6300,14 @@ def main():
                 else:
                     platform_status_text = f"Ready to deploy mining platform {live_platforms + 1}/{MINING_PLATFORM_MAX_PER_SECTOR}"
                     platform_status_color = UI_COLORS["ok"]
-                screen.blit(
-                    hud_font.render(platform_status_text, True, platform_status_color),
-                    (platform_x, content_y + 78),
+                draw_wrapped_lines(
+                    platform_status_text,
+                    platform_x,
+                    content_y + 78,
+                    hud_font,
+                    platform_status_color,
+                    status_w,
+                    max_lines=3,
                 )
 
                 live_turrets = sum(1 for turret in get_sector_defense_turrets(active_sector) if float(turret.get("hp", 0.0)) > 0.0)
@@ -5692,6 +6328,32 @@ def main():
                     ),
                     hud_font,
                     active=turret_active,
+                )
+
+                turret_status_text = "Select a clear defense position"
+                turret_status_color = UI_COLORS["muted"]
+                if not has_station:
+                    turret_status_text = "Need a station in this sector before placing a turret"
+                    turret_status_color = UI_COLORS["warn"]
+                elif sector_owner(active_sector) != "player":
+                    turret_status_text = "Claim the sector before placing defense turrets"
+                    turret_status_color = UI_COLORS["warn"]
+                elif live_turrets >= DEFENSE_TURRET_MAX_PER_SECTOR:
+                    turret_status_text = f"Turret cap reached ({DEFENSE_TURRET_MAX_PER_SECTOR} max)"
+                elif player.credits < BUILD_DEFENSE_TURRET_COST:
+                    turret_status_text = f"Need {BUILD_DEFENSE_TURRET_COST} gold to place a turret"
+                    turret_status_color = UI_COLORS["warn"]
+                else:
+                    turret_status_text = f"Ready to place turret {live_turrets + 1}/{DEFENSE_TURRET_MAX_PER_SECTOR}"
+                    turret_status_color = UI_COLORS["ok"]
+                draw_wrapped_lines(
+                    turret_status_text,
+                    turret_x,
+                    content_y + 78,
+                    hud_font,
+                    turret_status_color,
+                    status_w,
+                    max_lines=3,
                 )
 
                 turret_status_text = "Standalone turret buildable"
@@ -5821,23 +6483,12 @@ def main():
                     )
                     screen.blit(relink_hint, (build_panel.x + 20, content_y + 72))
 
-            tip = hud_font.render(
-                "Keys: B Build tab, M Map, I Ship, Esc Resume/Quit",
-                True,
-                UI_COLORS["muted"],
-            )
-            screen.blit(tip, (build_panel.x + 20, build_panel.bottom - 34))
         else:
             for key in build_ui:
                 build_ui[key] = None
 
-        if game_state == "playing" and audio.music_loaded:
-            music_state = "Muted" if audio.all_audio_muted or audio.music_muted else "On"
-            draw_hud_chip(f"Music {music_state}", SCREEN_WIDTH - 180, SCREEN_HEIGHT - 58, UI_COLORS["muted"])
-            draw_hud_chip(f"Track {audio.music_source}", SCREEN_WIDTH - 300, SCREEN_HEIGHT - 82, UI_COLORS["muted"])
-
         audio.draw_toggle_icon(screen, audio_toggle_button)
-        pygame.display.flip()
+        present_frame()
 
     def draw_background(camera):
         nonlocal shooting_star_timer
@@ -6587,38 +7238,13 @@ def main():
 
             draw_hud_chip(f"Shields {player.shield_layers}/{player.shield_level}", 10, 34, (125, 211, 252))
             draw_hud_chip(
-                f"Multishot L{player.multishot_level} ({len(player.multishot_pattern())} shots)",
-                10,
-                58,
-                (196, 181, 253),
-            )
-            draw_hud_chip(f"Targeting Beam L{player.targeting_beam_level}", 10, 82, UI_COLORS["accent_alt"])
-            draw_hud_chip(
-                f"Targeting Computer L{player.targeting_computer_level} ({player.targeting_computer_level} locks)",
-                10,
-                106,
-                UI_COLORS["accent_alt"],
-            )
-            draw_hud_chip(
                 (
                     f"Sublight Warp L{player.warp_drive_level} "
                     f"{player.warp_energy:.1f}/{player.get_warp_capacity_seconds():.1f}s"
                 ),
                 10,
-                130,
+                    58,
                 (249, 168, 212) if player.warp_boosting else (251, 207, 232),
-            )
-            draw_hud_chip(
-                f"Sector {active_sector[0]},{active_sector[1]}  Seed {world_seed}",
-                10,
-                154,
-                UI_COLORS["muted"],
-            )
-            draw_hud_chip(
-                f"Owner {owner_label(sector_owner(active_sector))}",
-                10,
-                178,
-                UI_COLORS["accent_alt"],
             )
             cmd_profile = command_progression_profile()
             draw_hud_chip(
@@ -6669,37 +7295,11 @@ def main():
                         250,
                         UI_COLORS["warn"] if bool(convoy.get("active", False)) else UI_COLORS["muted"],
                     )
-            draw_hud_chip(
-                (
-                    f"Combat L{player.combat_level} "
-                    f"XP {player.combat_xp}/{player.xp_needed_for_next_combat_level()} "
-                    f"DMG x{player.get_combat_damage_multiplier():.2f}"
-                ),
-                10,
-                274,
-                (253, 230, 138),
-            )
-            draw_hud_chip(
-                f"Missiles L{player.missile_level} CD {player.missile_timer:.1f}s (F)",
-                10,
-                298,
-                (167, 243, 208) if player.missile_timer <= 0 else (209, 213, 219),
-            )
-            draw_hud_chip(
-                (
-                    f"Cloak L{player.cloak_level} "
-                    f"{player.cloak_timer:.1f}/{player.get_cloak_capacity_seconds():.1f}s (V)"
-                ),
-                10,
-                322,
-                (125, 211, 252) if player.cloak_active else (148, 163, 184),
-            )
-
             if raid_events:
                 draw_hud_chip(
                     f"Raid Alerts {len(raid_events)}",
                     10,
-                    346,
+                    274,
                     UI_COLORS["warn"],
                 )
 
@@ -6711,14 +7311,14 @@ def main():
                         f"Waves {raid.get('waves_remaining', 0)}"
                     ),
                     10,
-                    370,
+                    298,
                     UI_COLORS["danger"],
                 )
                 if float(raid.get("security", 0.0)) > 0.0:
                     draw_hud_chip(
                         f"Defense Dampening x{float(raid.get('security', 0.0)):.1f}",
                         10,
-                        394,
+                        322,
                         UI_COLORS["ok"],
                     )
 
@@ -6726,7 +7326,7 @@ def main():
                 draw_hud_chip(
                     f"Scanner Cooldown {scanner_cooldown_timer:.1f}s",
                     10,
-                    418,
+                    346,
                     UI_COLORS["warn"],
                 )
 
@@ -6736,7 +7336,7 @@ def main():
                 draw_hud_chip(
                     f"Anomaly Pressure {anomaly_pressure:.2f} ({anomaly_pressure_hint})",
                     10,
-                    442,
+                    370,
                     UI_COLORS["warn"],
                 )
 
@@ -6879,7 +7479,6 @@ def main():
                 draw_button(screen, pause_button_rect, "Esc: Pause", hud_font, active=False, tone="alt")
 
                 if show_touch_action_controls and not is_docked:
-                    draw_touch_movement_buttons(screen, touch_movement_buttons)
                     draw_touch_action_buttons(screen, touch_action_buttons)
 
                 if god_mode:
@@ -6998,34 +7597,6 @@ def main():
             for idx in range(3):
                 planet_ui[f"job_{idx}"] = None
 
-        if False and game_state in ("menu", "paused"):
-            build_menu_ui_layout()
-            show_controls_overlay = (pause_tab == "controls")
-            show_audio_overlay = (pause_tab == "audio")
-            show_map_overlay = (pause_tab == "map")
-            show_ship_overlay = (pause_tab == "ship")
-            draw_menu_panel(
-                screen,
-                game_state,
-                has_active_game,
-                selected_difficulty,
-                menu_ui,
-                DIFFICULTY_SETTINGS,
-                title_font,
-                panel_font,
-                hud_font,
-                audio.music_loaded,
-                audio.music_driver,
-                audio.music_error,
-                show_controls_overlay,
-                show_audio_overlay,
-                show_map_overlay,
-                audio.music_muted,
-                audio.music_volume,
-                audio.sfx_muted,
-                audio.sfx_volume,
-            )
-
             if has_active_game and pause_tab == "build":
                 for key in build_ui:
                     build_ui[key] = None
@@ -7096,6 +7667,8 @@ def main():
                     UI_COLORS["muted"],
                 )
                 screen.blit(status, (build_panel.x + 20, content_y))
+                build_gold = hud_font.render(f"Current gold: {int(player.credits)}", True, UI_COLORS["accent"])
+                screen.blit(build_gold, (build_panel.right - build_gold.get_width() - 20, content_y))
 
                 sid = player_station_in_sector(active_sector)
                 has_station = sid is not None
@@ -7334,19 +7907,11 @@ def main():
                         )
                         screen.blit(relink_hint, (build_panel.x + 20, content_y + 72))
 
-                tip = hud_font.render(
-                    "Keys: B Build tab, M Map, I Ship, Esc Resume/Quit",
-                    True,
-                    UI_COLORS["muted"],
-                )
-                screen.blit(tip, (build_panel.x + 20, build_panel.bottom - 34))
             else:
                 for key in build_ui:
                     build_ui[key] = None
 
-        map_overlay_active = game_state in ("menu", "paused") and has_active_game and (
-            pause_tab == "map" or (pause_tab == "ship" and ship_tab == "map")
-        )
+        map_overlay_active = game_state in ("menu", "paused") and has_active_game and pause_tab == "map"
         if map_overlay_active:
             draw_map_panel(
                 screen,
@@ -7362,9 +7927,11 @@ def main():
                 hud_font,
                 sector_owner_fn=sector_owner,
                 owner_label_fn=owner_label,
-                build_status_fn=build_status_for_sector,
+                build_status_fn=map_action_status_for_sector,
                 raided_sectors=set(raid_events.keys()),
                 tactical_visible_sectors=scanner_live_window,
+                scanner_target_sectors=scanner_target_sectors(active_sector, player.scanner_level if player else 0),
+                ftl_target_sectors=owned_ftl_target_sectors(active_sector, player.warp_drive_level if player else 0),
             )
 
         if game_state in ("menu", "paused") and has_active_game and pause_tab == "ship":
@@ -7376,22 +7943,33 @@ def main():
                 ship_panel_rect,
                 player,
                 active_contract,
-                ship_tab,
                 ship_ui,
                 hud_font,
                 panel_font,
+            )
+
+        if game_state in ("menu", "paused") and has_active_game and pause_tab == "status":
+            ship_margin_x = max(88, SCREEN_WIDTH // 14)
+            ship_margin_y = max(52, SCREEN_HEIGHT // 13)
+            status_panel_rect = pygame.Rect(ship_margin_x, ship_margin_y, SCREEN_WIDTH - ship_margin_x * 2, SCREEN_HEIGHT - ship_margin_y * 2)
+            draw_status_panel(
+                screen,
+                status_panel_rect,
+                player,
+                active_contract,
+                status_ui,
+                hud_font,
+                panel_font,
                 command_profile=command_progression_profile(),
+                active_sector=active_sector,
+                sector_owner_label=owner_label(sector_owner(active_sector)),
+                world_seed=world_seed,
             )
 
         audio.draw_toggle_icon(screen, audio_toggle_button)
 
-        pygame.display.flip()
+        present_frame()
         dt = clock.tick(60) / 1000
-
-    if not has_active_game:
-        init_new_game(selected_difficulty)
-        game_state = "playing"
-        has_active_game = True
 
     # Persistent main game loop
     running = True
@@ -7401,7 +7979,6 @@ def main():
                 running = False
                 continue
             handle_event(event)
-        clear_expired_touch_moves(pygame.time.get_ticks())
         sync_virtual_controls()
         update_play_state()
         render_frame()

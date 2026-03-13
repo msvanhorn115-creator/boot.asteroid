@@ -102,6 +102,7 @@ def spawn_ship_explosion_fx(
     base_color,
     burst_scale=1.0,
     fragments=True,
+    sparks=True,
     fragment_life_scale=1.0,
     spark_life_scale=1.0,
 ):
@@ -129,30 +130,31 @@ def spawn_ship_explosion_fx(
                 }
             )
 
-    spark_count = max(10, int(18 * burst_scale))
-    for _ in range(spark_count):
-        angle = random.uniform(0, 360)
-        speed = random.uniform(120, 420) * burst_scale
-        velocity = pygame.Vector2(1, 0).rotate(angle) * speed
-        spark_color = pygame.Color(
-            min(255, color.r + random.randint(20, 65)),
-            min(255, color.g + random.randint(20, 65)),
-            min(255, color.b + random.randint(20, 65)),
-        )
-        life = random.uniform(0.2, 0.5) * spark_life_scale
-        ship_explosion_fx.append(
-            {
-                "kind": "spark",
-                "pos": center_vec.copy(),
-                "vel": velocity,
-                "life": life,
-                "max_life": life,
-                "size": random.uniform(2.0, 4.0),
-                "rotation": 0.0,
-                "spin": 0.0,
-                "color": spark_color,
-            }
-        )
+    if sparks:
+        spark_count = max(10, int(18 * burst_scale))
+        for _ in range(spark_count):
+            angle = random.uniform(0, 360)
+            speed = random.uniform(120, 420) * burst_scale
+            velocity = pygame.Vector2(1, 0).rotate(angle) * speed
+            spark_color = pygame.Color(
+                min(255, color.r + random.randint(20, 65)),
+                min(255, color.g + random.randint(20, 65)),
+                min(255, color.b + random.randint(20, 65)),
+            )
+            life = random.uniform(0.2, 0.5) * spark_life_scale
+            ship_explosion_fx.append(
+                {
+                    "kind": "spark",
+                    "pos": center_vec.copy(),
+                    "vel": velocity,
+                    "life": life,
+                    "max_life": life,
+                    "size": random.uniform(2.0, 4.0),
+                    "rotation": 0.0,
+                    "spin": 0.0,
+                    "color": spark_color,
+                }
+            )
 
 
 def update_ship_explosion_fx(ship_explosion_fx, delta_time):
